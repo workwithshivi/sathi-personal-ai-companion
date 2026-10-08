@@ -1,5 +1,7 @@
 package org.stg.savan.savanserver.controller;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+import org.stg.savan.savanserver.model.RetrievalResult;
 import org.stg.savan.savanserver.service.TranscriptService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -27,14 +29,14 @@ public class TranscriptController {
         }
 
         try {
-            transcriptService.saveTranscript(
+            String meetingId = transcriptService.saveTranscript(
                     request.text(),
                     request.device()
             );
 
             return ResponseEntity
                     .status(HttpStatus.CREATED)
-                    .body(Map.of("status", "saved"));
+                    .body(Map.of("status", "saved", "meeting_id", meetingId));
 
         } catch (IOException e) {
             return ResponseEntity
@@ -44,7 +46,7 @@ public class TranscriptController {
     }
 
     @PostMapping("/qna")
-    public ResponseEntity<Map<String, String>> answerQuestion(
+    public ResponseEntity<Map<String, Object>> answerQuestion(
             @RequestBody QnARequest request) {
 
         if (request.question() == null || request.question().isBlank()) {
@@ -52,13 +54,22 @@ public class TranscriptController {
                     .body(Map.of("error", "A non-empty question is required"));
         }
 
-        String answer = transcriptService.answerQuestion(
-                request.question().trim()
-        );
+        RetrievalResult result;
+        try {
+            result = transcriptService.retrieve(
+                    request.question().trim(),
+                    request.meetingId()
+            );
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("error", e.getMessage()));
+        }
 
-        return ResponseEntity.ok(
-                Map.of("answer", answer)
-        );
+        return ResponseEntity.ok(Map.of(
+                "answer", result.context(),
+                "intent", result.intent(),
+                "sources", result.sources()
+        ));
     }
 
     public record TranscriptRequest(
@@ -68,7 +79,8 @@ public class TranscriptController {
     }
 
     public record QnARequest(
-            String question
+            String question,
+            @JsonProperty("meeting_id") String meetingId
     ) {
     }
 }
