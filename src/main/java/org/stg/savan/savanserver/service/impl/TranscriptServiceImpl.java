@@ -14,11 +14,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import java.io.IOException;
 import java.time.Instant;
-import java.util.HashSet;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -90,22 +91,32 @@ public class TranscriptServiceImpl implements TranscriptService {
         long startedAt = System.nanoTime();
 
         int searchLimit = normalizedMeetingId == null ? UNFILTERED_SEARCH_COUNT : RESULT_COUNT;
-        log.info("Q&A retrieval started | intent={} | scope={} | threshold={} | top_k={}",
+        List<String> queryVariants = plannedQuery.searchText().equals(normalizedQuestion)
+                ? List.of(normalizedQuestion)
+                : List.of(normalizedQuestion, plannedQuery.searchText());
+        log.info("Q&A retrieval started | intent={} | scope={} | threshold={} | top_k={} | query_variants={}",
                 plannedQuery.intent(),
                 normalizedMeetingId == null ? "all_meetings" : normalizedMeetingId,
                 SIMILARITY_THRESHOLD,
-                searchLimit);
+                searchLimit,
+                queryVariants.size());
         log.debug("Q&A question: {}", normalizedQuestion);
 
-        SearchRequest.Builder searchBuilder = SearchRequest.builder()
-                .query(plannedQuery.searchText())
-                .topK(searchLimit)
-                .similarityThreshold(SIMILARITY_THRESHOLD);
-        if (normalizedMeetingId != null) {
-            searchBuilder.filterExpression("meeting_id == '" + normalizedMeetingId + "'");
+        List<Document> retrieved = new ArrayList<>();
+        for (String queryVariant : queryVariants) {
+            SearchRequest.Builder searchBuilder = SearchRequest.builder()
+                    .query(queryVariant)
+                    .topK(searchLimit)
+                    .similarityThreshold(SIMILARITY_THRESHOLD);
+            if (normalizedMeetingId != null) {
+                searchBuilder.filterExpression("meeting_id == '" + normalizedMeetingId + "'");
+            }
+            List<Document> variantResults = vectorStore.similaritySearch(searchBuilder.build());
+            if (variantResults != null) {
+                retrieved.addAll(variantResults);
+            }
         }
 
-        List<Document> retrieved = vectorStore.similaritySearch(searchBuilder.build());
         List<Document> documents = deduplicateAndLimit(retrieved);
 
         if (documents == null || documents.isEmpty()) {
@@ -157,11 +168,22 @@ public class TranscriptServiceImpl implements TranscriptService {
         if (documents == null || documents.isEmpty()) {
             return List.of();
         }
-        Set<String> seenContent = new HashSet<>();
-        return documents.stream()
-                .filter(document -> seenContent.add(normalizeText(document.getText())))
+        Map<String, Document> bestByContent = new LinkedHashMap<>();
+        for (Document document : documents) {
+            String normalizedContent = normalizeText(document.getText());
+            Document current = bestByContent.get(normalizedContent);
+            if (current == null || scoreOf(document) > scoreOf(current)) {
+                bestByContent.put(normalizedContent, document);
+            }
+        }
+        return bestByContent.values().stream()
+                .sorted(Comparator.comparing(TranscriptServiceImpl::scoreOf).reversed())
                 .limit(RESULT_COUNT)
                 .toList();
+    }
+
+    private static double scoreOf(Document document) {
+        return document.getScore() == null ? Double.NEGATIVE_INFINITY : document.getScore();
     }
 
     private static String normalizeText(String text) {

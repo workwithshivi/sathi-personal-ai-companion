@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -49,9 +50,10 @@ class TranscriptServiceImplTest {
                 "meeting-123e4567-e89b-12d3-a456-426614174000");
 
         assertEquals("ACTION_ITEM", result.intent());
-        assertTrue(vectorStore.lastSearchRequest.getQuery().contains("follow-ups"));
-        assertTrue(vectorStore.lastSearchRequest.hasFilterExpression());
-        assertTrue(vectorStore.lastSearchRequest.getFilterExpression().toString()
+        assertTrue(vectorStore.searchRequests.get(1).getQuery().contains("follow-ups"));
+        assertTrue(vectorStore.searchRequests.get(0).hasFilterExpression());
+        assertTrue(vectorStore.searchRequests.get(1).hasFilterExpression());
+        assertTrue(vectorStore.searchRequests.get(1).getFilterExpression().toString()
                 .contains("meeting_id"));
         assertTrue(result.context().contains("chunk_index=1"));
         assertEquals(1, result.sources().size());
@@ -77,6 +79,28 @@ class TranscriptServiceImplTest {
         assertEquals(2, result.context().split("\\[meeting_id=", -1).length - 1);
     }
 
+    @Test
+    void originalAndExpandedQueriesAreMergedWhenEitherFindsEvidence() {
+        StubVectorStore vectorStore = new StubVectorStore();
+        Document originalHit = document("The Pi team owns transcript ingestion.",
+                "meeting-123e4567-e89b-12d3-a456-426614174000", 0, "parent-1", 0.58);
+        Document expandedHit = document("Maya will verify similarity search.",
+                "meeting-123e4567-e89b-12d3-a456-426614174000", 1, "parent-1", 0.66);
+        vectorStore.searchResultProvider = request -> request.getQuery().contains("Find assigned tasks")
+                ? List.of(expandedHit)
+                : List.of(originalHit);
+        TranscriptServiceImpl service = service(vectorStore);
+
+        var result = service.retrieve("What is the to-do?",
+                "meeting-123e4567-e89b-12d3-a456-426614174000");
+
+        assertEquals(2, vectorStore.searchRequests.size());
+        assertEquals(2, result.sources().size());
+        assertTrue(result.context().contains("The Pi team owns transcript ingestion."));
+        assertTrue(result.context().contains("Maya will verify similarity search."));
+        assertEquals(0.66, result.sources().get(0).score());
+    }
+
     private static TranscriptServiceImpl service(StubVectorStore vectorStore) {
         return new TranscriptServiceImpl(vectorStore,
                 TokenTextSplitter.builder()
@@ -90,20 +114,26 @@ class TranscriptServiceImplTest {
 
     private static Document document(String text, String meetingId, int chunkIndex,
                                      String parentDocumentId) {
+        return document(text, meetingId, chunkIndex, parentDocumentId, 0.7);
+    }
+
+    private static Document document(String text, String meetingId, int chunkIndex,
+                                     String parentDocumentId, double score) {
         return Document.builder()
                 .text(text)
                 .metadata(Map.of(
                         "meeting_id", meetingId,
                         "chunk_index", chunkIndex,
                         "parent_document_id", parentDocumentId))
-                .score(0.7)
+                .score(score)
                 .build();
     }
 
     private static final class StubVectorStore implements VectorStore {
         private final List<Document> addedDocuments = new ArrayList<>();
+        private final List<SearchRequest> searchRequests = new ArrayList<>();
         private List<Document> searchResults = List.of();
-        private SearchRequest lastSearchRequest;
+        private Function<SearchRequest, List<Document>> searchResultProvider = request -> searchResults;
 
         @Override
         public void add(List<Document> documents) {
@@ -120,8 +150,8 @@ class TranscriptServiceImplTest {
 
         @Override
         public List<Document> similaritySearch(SearchRequest request) {
-            lastSearchRequest = request;
-            return searchResults;
+            searchRequests.add(request);
+            return searchResultProvider.apply(request);
         }
     }
 }

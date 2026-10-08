@@ -12,7 +12,7 @@ Spring Boot → Ollama embeddings → PostgreSQL / pgvector
 Raspberry Pi receives relevant transcript passages and generates the answer locally
 ```
 
-Transcripts are split into 350-token chunks. Retrieval uses a similarity threshold of `0.55`. Common action-item, decision, and future-plan question phrasings are routed through simple query expansion before semantic search. The service currently returns transcript evidence; it does not generate the final natural-language answer.
+Transcripts are split into 350-token chunks. Retrieval uses a similarity threshold of `0.55`. Common action-item, decision, and future-plan phrasings are routed through simple query expansion. For those questions, the service searches both the original and expanded wording, merges the matches, removes duplicate passages, and keeps the highest-scoring copies. The service currently returns transcript evidence; it does not generate the final natural-language answer.
 
 ## Requirements
 
