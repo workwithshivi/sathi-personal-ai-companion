@@ -1,14 +1,16 @@
 package org.stg.savan.savanserver.controller;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
+import org.stg.savan.savanserver.model.ApiErrorResponse;
+import org.stg.savan.savanserver.model.QuestionRequest;
+import org.stg.savan.savanserver.model.RetrievalAnswerResponse;
 import org.stg.savan.savanserver.model.RetrievalResult;
+import org.stg.savan.savanserver.model.TranscriptRequest;
+import org.stg.savan.savanserver.model.TranscriptSaveResponse;
 import org.stg.savan.savanserver.service.TranscriptService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.io.IOException;
-import java.util.Map;
 
 @RestController
 public class TranscriptController {
@@ -20,38 +22,36 @@ public class TranscriptController {
     }
 
     @PostMapping("/transcripts")
-    public ResponseEntity<Map<String, String>> saveTranscript(
+    public ResponseEntity<?> saveTranscript(
             @RequestBody TranscriptRequest request) {
 
         if (request.text() == null || request.text().isBlank()) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", "A non-empty text field is required"));
+                    .body(new ApiErrorResponse("A non-empty text field is required"));
         }
 
         try {
             String meetingId = transcriptService.saveTranscript(
                     request.text(),
-                    request.device()
+                    request.device(),
+                    request.meetingId()
             );
 
             return ResponseEntity
                     .status(HttpStatus.CREATED)
-                    .body(Map.of("status", "saved", "meeting_id", meetingId));
+                    .body(new TranscriptSaveResponse("saved", meetingId));
 
-        } catch (IOException e) {
-            return ResponseEntity
-                    .internalServerError()
-                    .body(Map.of("error", "Could not save transcript"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(new ApiErrorResponse(e.getMessage()));
         }
     }
 
     @PostMapping("/qna")
-    public ResponseEntity<Map<String, Object>> answerQuestion(
-            @RequestBody QnARequest request) {
+    public ResponseEntity<?> answerQuestion(@RequestBody QuestionRequest request) {
 
         if (request.question() == null || request.question().isBlank()) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", "A non-empty question is required"));
+                    .body(new ApiErrorResponse("A non-empty question is required"));
         }
 
         RetrievalResult result;
@@ -62,25 +62,10 @@ public class TranscriptController {
             );
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", e.getMessage()));
+                    .body(new ApiErrorResponse(e.getMessage()));
         }
 
-        return ResponseEntity.ok(Map.of(
-                "answer", result.context(),
-                "intent", result.intent(),
-                "sources", result.sources()
-        ));
-    }
-
-    public record TranscriptRequest(
-            String text,
-            String device
-    ) {
-    }
-
-    public record QnARequest(
-            String question,
-            @JsonProperty("meeting_id") String meetingId
-    ) {
+        return ResponseEntity.ok(new RetrievalAnswerResponse(
+                result.context(), result.intent(), result.sources()));
     }
 }

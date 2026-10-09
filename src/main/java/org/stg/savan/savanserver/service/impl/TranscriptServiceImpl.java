@@ -3,36 +3,27 @@ package org.stg.savan.savanserver.service.impl;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.stg.savan.savanserver.constants.SathiConstants;
 import org.stg.savan.savanserver.model.MemoryType;
 import org.stg.savan.savanserver.model.RetrievalResult;
 import org.stg.savan.savanserver.model.RetrievalSource;
 import org.stg.savan.savanserver.service.TranscriptService;
+import org.stg.savan.savanserver.service.support.TranscriptDocumentSupport;
+import org.stg.savan.savanserver.util.MeetingIds;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Service;
 import org.springframework.ai.transformer.splitter.TokenTextSplitter;
-import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 
 @Service
 public class TranscriptServiceImpl implements TranscriptService {
-    private static final int RESULT_COUNT = 3;
-    private static final int UNFILTERED_SEARCH_COUNT = 12;
-    private static final double SIMILARITY_THRESHOLD = 0.55;
-    private static final Pattern MEETING_ID_PATTERN = Pattern.compile(
-            "meeting-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
-
     private static final Logger log =
             LoggerFactory.getLogger(TranscriptServiceImpl.class);
 
@@ -45,16 +36,16 @@ public class TranscriptServiceImpl implements TranscriptService {
     }
 
     @Override
-    public String saveTranscript(String text, String device) throws IOException {
+    public String saveTranscript(String text, String device, String requestedMeetingId) {
 
         String normalizedText = text.trim();
 
         String normalizedDevice = device == null || device.isBlank()
-                ? "raspberry-pi"
+                ? SathiConstants.DEFAULT_TRANSCRIPT_DEVICE
                 : device;
 
         String receivedAt = Instant.now().toString();
-        String meetingId = "meeting-" + UUID.randomUUID();
+        String meetingId = MeetingIds.createOrPreserve(requestedMeetingId);
 
         log.info("Saving transcript from device: {}", normalizedDevice);
 
@@ -79,25 +70,22 @@ public class TranscriptServiceImpl implements TranscriptService {
     }
 
     @Override
-    public String answerQuestion(String question) {
-        return retrieve(question, null).context();
-    }
-
-    @Override
     public RetrievalResult retrieve(String question, String meetingId) {
         String normalizedQuestion = question.trim();
-        String normalizedMeetingId = normalizeMeetingId(meetingId);
+        String normalizedMeetingId = MeetingIds.normalizeOptional(meetingId);
         QueryIntentRouter.PlannedQuery plannedQuery = QueryIntentRouter.plan(normalizedQuestion);
         long startedAt = System.nanoTime();
 
-        int searchLimit = normalizedMeetingId == null ? UNFILTERED_SEARCH_COUNT : RESULT_COUNT;
+        int searchLimit = normalizedMeetingId == null
+                ? SathiConstants.UNFILTERED_TRANSCRIPT_SEARCH_COUNT
+                : SathiConstants.TRANSCRIPT_RESULT_COUNT;
         List<String> queryVariants = plannedQuery.searchText().equals(normalizedQuestion)
                 ? List.of(normalizedQuestion)
                 : List.of(normalizedQuestion, plannedQuery.searchText());
         log.info("Q&A retrieval started | intent={} | scope={} | threshold={} | top_k={} | query_variants={}",
                 plannedQuery.intent(),
                 normalizedMeetingId == null ? "all_meetings" : normalizedMeetingId,
-                SIMILARITY_THRESHOLD,
+                SathiConstants.SIMILARITY_THRESHOLD,
                 searchLimit,
                 queryVariants.size());
         log.debug("Q&A question: {}", normalizedQuestion);
@@ -107,7 +95,7 @@ public class TranscriptServiceImpl implements TranscriptService {
             SearchRequest.Builder searchBuilder = SearchRequest.builder()
                     .query(queryVariant)
                     .topK(searchLimit)
-                    .similarityThreshold(SIMILARITY_THRESHOLD);
+                    .similarityThreshold(SathiConstants.SIMILARITY_THRESHOLD);
             if (normalizedMeetingId != null) {
                 searchBuilder.filterExpression("meeting_id == '" + normalizedMeetingId + "'");
             }
@@ -117,9 +105,10 @@ public class TranscriptServiceImpl implements TranscriptService {
             }
         }
 
-        List<Document> documents = deduplicateAndLimit(retrieved);
+        List<Document> documents = TranscriptDocumentSupport.deduplicateAndLimit(
+                retrieved, SathiConstants.TRANSCRIPT_RESULT_COUNT);
 
-        if (documents == null || documents.isEmpty()) {
+        if (documents.isEmpty()) {
             log.info("No relevant memories found | intent={} | elapsed_ms={}",
                     plannedQuery.intent(), elapsedMillis(startedAt));
             return new RetrievalResult(
@@ -129,10 +118,10 @@ public class TranscriptServiceImpl implements TranscriptService {
         }
 
         List<RetrievalSource> sources = documents.stream()
-                .map(TranscriptServiceImpl::toSource)
+                .map(TranscriptDocumentSupport::toSource)
                 .toList();
         String context = documents.stream()
-                .map(TranscriptServiceImpl::toTraceableContext)
+                .map(TranscriptDocumentSupport::toTraceableContext)
                 .collect(Collectors.joining("\n\n"));
 
         log.info("Retrieved {} unique memories | elapsed_ms={}",
@@ -151,70 +140,6 @@ public class TranscriptServiceImpl implements TranscriptService {
         }
 
         return new RetrievalResult(context, plannedQuery.intent(), sources);
-    }
-
-    private static String normalizeMeetingId(String meetingId) {
-        if (meetingId == null || meetingId.isBlank()) {
-            return null;
-        }
-        String normalized = meetingId.trim();
-        if (!MEETING_ID_PATTERN.matcher(normalized).matches()) {
-            throw new IllegalArgumentException("meeting_id must be a meeting UUID returned by transcript ingestion");
-        }
-        return normalized;
-    }
-
-    private static List<Document> deduplicateAndLimit(List<Document> documents) {
-        if (documents == null || documents.isEmpty()) {
-            return List.of();
-        }
-        Map<String, Document> bestByContent = new LinkedHashMap<>();
-        for (Document document : documents) {
-            String normalizedContent = normalizeText(document.getText());
-            Document current = bestByContent.get(normalizedContent);
-            if (current == null || scoreOf(document) > scoreOf(current)) {
-                bestByContent.put(normalizedContent, document);
-            }
-        }
-        return bestByContent.values().stream()
-                .sorted(Comparator.comparing(TranscriptServiceImpl::scoreOf).reversed())
-                .limit(RESULT_COUNT)
-                .toList();
-    }
-
-    private static double scoreOf(Document document) {
-        return document.getScore() == null ? Double.NEGATIVE_INFINITY : document.getScore();
-    }
-
-    private static String normalizeText(String text) {
-        return text == null ? "" : text.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
-    }
-
-    private static RetrievalSource toSource(Document document) {
-        Map<String, Object> metadata = document.getMetadata();
-        return new RetrievalSource(
-                (String) metadata.get("meeting_id"),
-                asInteger(metadata.get("chunk_index")),
-                (String) metadata.get("parent_document_id"),
-                document.getScore());
-    }
-
-    private static String toTraceableContext(Document document) {
-        Map<String, Object> metadata = document.getMetadata();
-        return "[meeting_id=" + metadata.get("meeting_id")
-                + ", chunk_index=" + metadata.get("chunk_index")
-                + ", parent_document_id=" + metadata.get("parent_document_id") + "]\n"
-                + document.getText();
-    }
-
-    private static Integer asInteger(Object value) {
-        if (value instanceof Number number) {
-            return number.intValue();
-        }
-        if (value == null) {
-            return null;
-        }
-        return Integer.valueOf(value.toString());
     }
 
     private static String preview(String text) {

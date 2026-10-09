@@ -7,7 +7,6 @@ import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.ai.vectorstore.filter.Filter;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -22,21 +21,38 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class TranscriptServiceImplTest {
 
     @Test
-    void saveTranscriptAddsMeetingAndMemoryTypeMetadataToEveryChunk() throws IOException {
+    void saveTranscriptAddsMeetingAndMemoryTypeMetadataToEveryChunk() {
         StubVectorStore vectorStore = new StubVectorStore();
         TranscriptServiceImpl service = service(vectorStore);
 
         String meetingId = service.saveTranscript(
-                String.join(" ", Collections.nCopies(900, "transcript")), null);
+                String.join(" ", Collections.nCopies(900, "transcript")), null, null);
 
         assertNotNull(meetingId);
-        assertTrue(meetingId.startsWith("meeting-"));
+        assertTrue(meetingId.matches("meeting-\\d{8}T\\d{6}Z-[0-9a-f]{8}"));
         assertFalse(vectorStore.addedDocuments.isEmpty());
         assertTrue(vectorStore.addedDocuments.stream().allMatch(document ->
                 meetingId.equals(document.getMetadata().get("meeting_id"))
                         && "transcript".equals(document.getMetadata().get("memory_type"))
                         && "raspberry-pi".equals(document.getMetadata().get("device"))
                         && document.getMetadata().containsKey("received_at")));
+    }
+
+    @Test
+    void saveTranscriptUsesProvidedMeetingIdForEveryChunk() {
+        StubVectorStore vectorStore = new StubVectorStore();
+        TranscriptServiceImpl service = service(vectorStore);
+        String providedMeetingId = "pi-meeting-20261008-morning";
+
+        String meetingId = service.saveTranscript(
+                String.join(" ", Collections.nCopies(900, "transcript")),
+                "raspberry-pi",
+                providedMeetingId);
+
+        assertEquals(providedMeetingId, meetingId);
+        assertFalse(vectorStore.addedDocuments.isEmpty());
+        assertTrue(vectorStore.addedDocuments.stream().allMatch(document ->
+                providedMeetingId.equals(document.getMetadata().get("meeting_id"))));
     }
 
     @Test
