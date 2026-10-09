@@ -1,10 +1,10 @@
 package org.stg.savan.savanserver.service;
 
-import java.io.IOException;
+import org.stg.savan.savanserver.model.RetrievalResult;
 
 public interface TranscriptService {
 
-    void saveTranscript(String text, String device) throws IOException;
+    String saveTranscript(String text, String device, String meetingId);
 
-    String answerQuestion(String question);
+    RetrievalResult retrieve(String question, String meetingId);
 }

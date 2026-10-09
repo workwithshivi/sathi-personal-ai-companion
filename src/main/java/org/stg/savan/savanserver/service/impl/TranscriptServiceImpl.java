@@ -3,18 +3,22 @@ package org.stg.savan.savanserver.service.impl;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.stg.savan.savanserver.constants.SathiConstants;
 import org.stg.savan.savanserver.model.MemoryType;
+import org.stg.savan.savanserver.model.RetrievalResult;
+import org.stg.savan.savanserver.model.RetrievalSource;
 import org.stg.savan.savanserver.service.TranscriptService;
+import org.stg.savan.savanserver.service.support.TranscriptDocumentSupport;
+import org.stg.savan.savanserver.util.MeetingIds;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Service;
 import org.springframework.ai.transformer.splitter.TokenTextSplitter;
-import java.io.IOException;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.stream.Collectors;
 
 
@@ -32,19 +36,18 @@ public class TranscriptServiceImpl implements TranscriptService {
     }
 
     @Override
-    public void saveTranscript(String text, String device) throws IOException {
+    public String saveTranscript(String text, String device, String requestedMeetingId) {
 
         String normalizedText = text.trim();
 
         String normalizedDevice = device == null || device.isBlank()
-                ? "raspberry-pi"
+                ? SathiConstants.DEFAULT_TRANSCRIPT_DEVICE
                 : device;
 
         String receivedAt = Instant.now().toString();
-        String meetingId = "meeting-" + UUID.randomUUID();
+        String meetingId = MeetingIds.createOrPreserve(requestedMeetingId);
 
         log.info("Saving transcript from device: {}", normalizedDevice);
-        log.debug("Transcript content: {}", normalizedText);
 
         Document document = new Document(
                 normalizedText,
@@ -62,42 +65,102 @@ public class TranscriptServiceImpl implements TranscriptService {
 
         vectorStore.add(chunks);
 
-        log.info("Transcript successfully stored in vector store");
+        log.info("Transcript stored as meeting {} with {} chunks", meetingId, chunks.size());
+        return meetingId;
     }
 
     @Override
-    public String answerQuestion(String question) {
+    public RetrievalResult retrieve(String question, String meetingId) {
+        String normalizedQuestion = question.trim();
+        String normalizedMeetingId = MeetingIds.normalizeOptional(meetingId);
+        QueryIntentRouter.PlannedQuery plannedQuery = QueryIntentRouter.plan(normalizedQuestion);
+        long startedAt = System.nanoTime();
 
-        log.info("Processing Q&A request");
-        log.debug("Question: {}", question);
+        int searchLimit = normalizedMeetingId == null
+                ? SathiConstants.UNFILTERED_TRANSCRIPT_SEARCH_COUNT
+                : SathiConstants.TRANSCRIPT_RESULT_COUNT;
+        List<String> queryVariants = plannedQuery.searchQueries();
+        log.info("Q&A retrieval started | intent={} | scope={} | threshold={} | top_k={} | query_variants={}",
+                plannedQuery.intent(),
+                normalizedMeetingId == null ? "all_meetings" : normalizedMeetingId,
+                SathiConstants.SIMILARITY_THRESHOLD,
+                searchLimit,
+                queryVariants.size());
+        log.debug("Q&A question: {}", normalizedQuestion);
 
-        List<Document> documents = vectorStore.similaritySearch(
-                SearchRequest.builder()
-                        .query(question.trim())
-                        .topK(3)
-                        .similarityThreshold(0.55)
-                        .build()
-        );
-
-        if (documents == null || documents.isEmpty()) {
-            log.info("No relevant memories found for question");
-
-            return "I could not find anything relevant in the meeting transcript.";
+        List<Document> retrieved = search(queryVariants, normalizedMeetingId, searchLimit,
+                SathiConstants.SIMILARITY_THRESHOLD);
+        if (retrieved.isEmpty()) {
+            log.info("No transcript matches at primary threshold; retrying retrieval | scope={} | threshold={}",
+                    normalizedMeetingId == null ? "all_meetings" : normalizedMeetingId,
+                    SathiConstants.RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD);
+            retrieved = search(queryVariants, normalizedMeetingId, searchLimit,
+                    SathiConstants.RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD);
         }
 
-        log.info("Retrieved {} relevant memories", documents.size());
+        List<Document> documents = TranscriptDocumentSupport.deduplicateAndLimit(
+                retrieved, SathiConstants.TRANSCRIPT_RESULT_COUNT);
 
-        documents.forEach(document ->
-                log.info(
-                        "Retrieved memory | Score: {} | Metadata: {} | Content: {}",
-                        document.getScore(),
-                        document.getMetadata(),
-                        document.getText())
+        if (documents.isEmpty()) {
+            log.info("No relevant memories found | intent={} | elapsed_ms={}",
+                    plannedQuery.intent(), elapsedMillis(startedAt));
+            return new RetrievalResult(
+                    "I could not find anything relevant in the meeting transcript.",
+                    plannedQuery.intent(),
+                    List.of());
+        }
 
-        );
+        List<RetrievalSource> sources = documents.stream()
+                .map(TranscriptDocumentSupport::toSource)
+                .toList();
+        String context = documents.stream()
+                .map(TranscriptDocumentSupport::toTraceableContext)
+                .collect(Collectors.joining("\n\n"));
 
-        return documents.stream()
-                .map(Document::getText)
-                .collect(Collectors.joining("\n"));
+        log.info("Retrieved {} unique memories | elapsed_ms={}",
+                documents.size(), elapsedMillis(startedAt));
+        for (int index = 0; index < documents.size(); index++) {
+            Document document = documents.get(index);
+            Map<String, Object> metadata = document.getMetadata();
+            log.info("Result {}/{} | meeting_id={} | chunk_index={} | score={} | parent_document_id={}",
+                    index + 1,
+                    documents.size(),
+                    metadata.get("meeting_id"),
+                    metadata.get("chunk_index"),
+                    document.getScore(),
+                    metadata.get("parent_document_id"));
+            log.debug("Result {}/{} preview: {}", index + 1, documents.size(), preview(document.getText()));
+        }
+
+        return new RetrievalResult(context, plannedQuery.intent(), sources);
+    }
+
+    private static String preview(String text) {
+        String singleLine = text == null ? "" : text.replaceAll("\\s+", " ").trim();
+        return singleLine.length() <= 180
+                ? singleLine
+                : singleLine.substring(0, 180) + "…";
+    }
+
+    private static long elapsedMillis(long startedAt) {
+        return (System.nanoTime() - startedAt) / 1_000_000;
+    }
+
+    private List<Document> search(List<String> queries, String meetingId, int topK, double threshold) {
+        List<Document> results = new ArrayList<>();
+        for (String query : queries) {
+            SearchRequest.Builder request = SearchRequest.builder()
+                    .query(query)
+                    .topK(topK)
+                    .similarityThreshold(threshold);
+            if (meetingId != null) {
+                request.filterExpression("meeting_id == '" + meetingId + "'");
+            }
+            List<Document> matches = vectorStore.similaritySearch(request.build());
+            if (matches != null) {
+                results.addAll(matches);
+            }
+        }
+        return results;
     }
 }
