@@ -59,7 +59,10 @@ Set `Content-Type: application/json`.
 
 ```json
 {
-  "text": "Shivam will test transcript ingestion. The team will verify the mute switch.",
+  "text": [
+    "Shivam will test transcript ingestion.",
+    "The team will verify the mute switch."
+  ],
   "device": "raspberry-pi",
   "meeting_id": "pi-meeting-20261008-morning"
 }
@@ -118,7 +121,10 @@ This optional endpoint stores the original transcript in the same pgvector store
 
 ```json
 {
-  "text": "The team agreed to test the offline demo on Friday. Asha will measure response time.",
+  "text": [
+    "The team agreed to test the offline demo on Friday.",
+    "Asha will measure response time."
+  ],
   "device": "laptop",
   "meeting_id": "pi-meeting-20261008-morning"
 }

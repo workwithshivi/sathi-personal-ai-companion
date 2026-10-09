@@ -19,6 +19,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
@@ -83,6 +84,14 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
                 retrieved, SathiConstants.CHAT_RESULT_COUNT);
         if (contextDocuments.isEmpty()) {
             log.info("No ChatClient transcript context found after fallback | scope={}", scope);
+            return new ChatAnswerResult(SathiConstants.CHAT_NOT_FOUND_MESSAGE, normalizedMeetingId, List.of());
+        }
+
+        String requiredSubject = plannedQuery.requiredSubject();
+        if (requiredSubject != null && contextDocuments.stream()
+                .noneMatch(document -> containsTerm(document.getText(), requiredSubject))) {
+            log.info("Retrieved incident evidence does not mention the requested impact subject | scope={} | subject={}",
+                    scope, requiredSubject);
             return new ChatAnswerResult(SathiConstants.CHAT_NOT_FOUND_MESSAGE, normalizedMeetingId, List.of());
         }
 
@@ -153,6 +162,12 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
         return meetingId == null
                 ? pipelineFilter
                 : pipelineFilter + " && meeting_id == '" + meetingId + "'";
+    }
+
+    private static boolean containsTerm(String text, String term) {
+        return Pattern.compile("(?iu)\\b" + Pattern.quote(term) + "\\b")
+                .matcher(text == null ? "" : text)
+                .find();
     }
 
 }

@@ -28,14 +28,15 @@ public class ChatTranscriptController {
     @PostMapping("/ai/transcripts")
     public ResponseEntity<?> saveTranscript(
             @RequestBody TranscriptRequest request) {
-        if (request.text() == null || request.text().isBlank()) {
+        String transcriptText = request.combinedText();
+        if (transcriptText.isBlank()) {
             return ResponseEntity.badRequest()
-                    .body(new ApiErrorResponse("A non-empty text field is required"));
+                    .body(new ApiErrorResponse("A non-empty text array is required"));
         }
 
         try {
             String meetingId = chatTranscriptService.saveTranscript(
-                    request.text(), request.device(), request.meetingId());
+                    transcriptText, request.device(), request.meetingId());
             return ResponseEntity.status(HttpStatus.CREATED)
                     .body(new TranscriptSaveResponse("saved", meetingId));
         } catch (IllegalArgumentException e) {

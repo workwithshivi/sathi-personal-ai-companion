@@ -25,14 +25,15 @@ public class TranscriptController {
     public ResponseEntity<?> saveTranscript(
             @RequestBody TranscriptRequest request) {
 
-        if (request.text() == null || request.text().isBlank()) {
+        String transcriptText = request.combinedText();
+        if (transcriptText.isBlank()) {
             return ResponseEntity.badRequest()
-                    .body(new ApiErrorResponse("A non-empty text field is required"));
+                    .body(new ApiErrorResponse("A non-empty text array is required"));
         }
 
         try {
             String meetingId = transcriptService.saveTranscript(
-                    request.text(),
+                    transcriptText,
                     request.device(),
                     request.meetingId()
             );

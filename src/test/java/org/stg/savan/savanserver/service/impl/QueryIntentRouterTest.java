@@ -48,7 +48,14 @@ class QueryIntentRouterTest {
 
         assertEquals("INCIDENT_IMPACT", planned.intent());
         assertEquals(3, planned.searchQueries().size());
+        assertEquals("production", planned.requiredSubject());
         assertTrue(planned.searchQueries().get(1).contains("incident or outage"));
         assertTrue(planned.searchQueries().get(2).contains("production unaffected"));
+    }
+
+    @Test
+    void extractsSpecificSubjectFromIncidentImpactQuestion() {
+        assertEquals("cricket", QueryIntentRouter.plan("Did the outage affect cricket?").requiredSubject());
+        assertEquals("production", QueryIntentRouter.plan("Was production impacted by the outage?").requiredSubject());
     }
 }
