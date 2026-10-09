@@ -65,28 +65,24 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
         String normalizedQuestion = question.trim();
         String normalizedMeetingId = MeetingIds.normalizeOptional(meetingId);
         QueryIntentRouter.PlannedQuery plannedQuery = QueryIntentRouter.plan(normalizedQuestion);
-        List<String> queryVariants = plannedQuery.searchText().equals(normalizedQuestion)
-                ? List.of(normalizedQuestion)
-                : List.of(normalizedQuestion, plannedQuery.searchText());
+        String scope = normalizedMeetingId == null ? "all_chat_meetings" : normalizedMeetingId;
 
-        List<Document> retrieved = new ArrayList<>();
-        for (String query : queryVariants) {
-            SearchRequest.Builder request = SearchRequest.builder()
-                    .query(query)
-                    .topK(SathiConstants.CHAT_RESULT_COUNT)
-                    .similarityThreshold(SathiConstants.SIMILARITY_THRESHOLD)
-                    .filterExpression(meetingIdFilter(normalizedMeetingId));
-            List<Document> matches = vectorStore.similaritySearch(request.build());
-            if (matches != null) {
-                retrieved.addAll(matches);
-            }
+        log.info("ChatClient retrieval started | intent={} | scope={} | threshold={} | query_variants={}",
+                plannedQuery.intent(), scope, SathiConstants.SIMILARITY_THRESHOLD,
+                plannedQuery.searchQueries().size());
+        List<Document> retrieved = search(plannedQuery.searchQueries(), normalizedMeetingId,
+                SathiConstants.SIMILARITY_THRESHOLD);
+        if (retrieved.isEmpty()) {
+            log.info("No matches at primary threshold; retrying retrieval | scope={} | threshold={}",
+                    scope, SathiConstants.RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD);
+            retrieved = search(plannedQuery.searchQueries(), normalizedMeetingId,
+                    SathiConstants.RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD);
         }
 
         List<Document> contextDocuments = TranscriptDocumentSupport.deduplicateAndLimit(
                 retrieved, SathiConstants.CHAT_RESULT_COUNT);
         if (contextDocuments.isEmpty()) {
-            log.info("No ChatClient transcript context found | scope={}",
-                    normalizedMeetingId == null ? "all_chat_meetings" : normalizedMeetingId);
+            log.info("No ChatClient transcript context found after fallback | scope={}", scope);
             return new ChatAnswerResult(SathiConstants.CHAT_NOT_FOUND_MESSAGE, normalizedMeetingId, List.of());
         }
 
@@ -105,6 +101,9 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
                     sources.size());
             return new ChatAnswerResult(deterministicAnswer.get(), normalizedMeetingId, sources);
         }
+
+        log.info("Retrieved {} unique ChatClient evidence chunks | scope={} | best_score={}",
+                sources.size(), scope, sources.getFirst().score());
 
         long startedAt = System.nanoTime();
         String answer = chatClient.prompt()
@@ -130,6 +129,23 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
                 sources.size(),
                 (System.nanoTime() - startedAt) / 1_000_000);
         return new ChatAnswerResult(answer.trim(), normalizedMeetingId, sources);
+    }
+
+    private List<Document> search(List<String> queries, String meetingId, double threshold) {
+        List<Document> matches = new ArrayList<>();
+        for (String query : queries) {
+            SearchRequest request = SearchRequest.builder()
+                    .query(query)
+                    .topK(SathiConstants.CHAT_RESULT_COUNT)
+                    .similarityThreshold(threshold)
+                    .filterExpression(meetingIdFilter(meetingId))
+                    .build();
+            List<Document> results = vectorStore.similaritySearch(request);
+            if (results != null) {
+                matches.addAll(results);
+            }
+        }
+        return matches;
     }
 
     private static String meetingIdFilter(String meetingId) {

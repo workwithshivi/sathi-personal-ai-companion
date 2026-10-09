@@ -79,9 +79,7 @@ public class TranscriptServiceImpl implements TranscriptService {
         int searchLimit = normalizedMeetingId == null
                 ? SathiConstants.UNFILTERED_TRANSCRIPT_SEARCH_COUNT
                 : SathiConstants.TRANSCRIPT_RESULT_COUNT;
-        List<String> queryVariants = plannedQuery.searchText().equals(normalizedQuestion)
-                ? List.of(normalizedQuestion)
-                : List.of(normalizedQuestion, plannedQuery.searchText());
+        List<String> queryVariants = plannedQuery.searchQueries();
         log.info("Q&A retrieval started | intent={} | scope={} | threshold={} | top_k={} | query_variants={}",
                 plannedQuery.intent(),
                 normalizedMeetingId == null ? "all_meetings" : normalizedMeetingId,
@@ -90,19 +88,14 @@ public class TranscriptServiceImpl implements TranscriptService {
                 queryVariants.size());
         log.debug("Q&A question: {}", normalizedQuestion);
 
-        List<Document> retrieved = new ArrayList<>();
-        for (String queryVariant : queryVariants) {
-            SearchRequest.Builder searchBuilder = SearchRequest.builder()
-                    .query(queryVariant)
-                    .topK(searchLimit)
-                    .similarityThreshold(SathiConstants.SIMILARITY_THRESHOLD);
-            if (normalizedMeetingId != null) {
-                searchBuilder.filterExpression("meeting_id == '" + normalizedMeetingId + "'");
-            }
-            List<Document> variantResults = vectorStore.similaritySearch(searchBuilder.build());
-            if (variantResults != null) {
-                retrieved.addAll(variantResults);
-            }
+        List<Document> retrieved = search(queryVariants, normalizedMeetingId, searchLimit,
+                SathiConstants.SIMILARITY_THRESHOLD);
+        if (retrieved.isEmpty()) {
+            log.info("No transcript matches at primary threshold; retrying retrieval | scope={} | threshold={}",
+                    normalizedMeetingId == null ? "all_meetings" : normalizedMeetingId,
+                    SathiConstants.RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD);
+            retrieved = search(queryVariants, normalizedMeetingId, searchLimit,
+                    SathiConstants.RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD);
         }
 
         List<Document> documents = TranscriptDocumentSupport.deduplicateAndLimit(
@@ -151,5 +144,23 @@ public class TranscriptServiceImpl implements TranscriptService {
 
     private static long elapsedMillis(long startedAt) {
         return (System.nanoTime() - startedAt) / 1_000_000;
+    }
+
+    private List<Document> search(List<String> queries, String meetingId, int topK, double threshold) {
+        List<Document> results = new ArrayList<>();
+        for (String query : queries) {
+            SearchRequest.Builder request = SearchRequest.builder()
+                    .query(query)
+                    .topK(topK)
+                    .similarityThreshold(threshold);
+            if (meetingId != null) {
+                request.filterExpression("meeting_id == '" + meetingId + "'");
+            }
+            List<Document> matches = vectorStore.similaritySearch(request.build());
+            if (matches != null) {
+                results.addAll(matches);
+            }
+        }
+        return results;
     }
 }

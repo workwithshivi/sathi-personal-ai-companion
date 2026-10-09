@@ -33,12 +33,22 @@ class QueryIntentRouterTest {
 
     @Test
     void expandsMissedQuestionPhrasingsWithSearchConcepts() {
-        var actionQuery = QueryIntentRouter.plan("What should I get done next?").searchText();
-        var decisionQuery = QueryIntentRouter.plan("Where will final answer generation happen?").searchText();
-        var futureQuery = QueryIntentRouter.plan("What is the next milestone?").searchText();
+        var actionQuery = QueryIntentRouter.plan("What should I get done next?").searchQueries().get(1);
+        var decisionQuery = QueryIntentRouter.plan("Where will final answer generation happen?").searchQueries().get(1);
+        var futureQuery = QueryIntentRouter.plan("What is the next milestone?").searchQueries().get(1);
 
         assertTrue(actionQuery.contains("task owners"));
         assertTrue(decisionQuery.contains("where processing, reasoning, or answer generation"));
         assertTrue(futureQuery.contains("next milestones, and roadmap"));
+    }
+
+    @Test
+    void expandsOutageImpactQuestionsToIncidentAndProductionPhrasings() {
+        var planned = QueryIntentRouter.plan("Did the outage affect production?");
+
+        assertEquals("INCIDENT_IMPACT", planned.intent());
+        assertEquals(3, planned.searchQueries().size());
+        assertTrue(planned.searchQueries().get(1).contains("incident or outage"));
+        assertTrue(planned.searchQueries().get(2).contains("production unaffected"));
     }
 }
