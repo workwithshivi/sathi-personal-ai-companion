@@ -67,6 +67,7 @@ AUDIO_CHUNK_SIZE = 4000
 SPEECH_THRESHOLD = 0.005
 SILENCE_CHUNKS = 6
 MAX_UTTERANCE_CHUNKS = 160
+SQLITE_CHUNK_SECONDS = 30.0
 
 
 # ============================================================
@@ -81,6 +82,8 @@ command_mode = False
 
 mic_process = None
 running = True
+transcript_buffer = []
+transcript_buffer_seconds = 0.0
 
 
 def print_status(message):
@@ -209,6 +212,8 @@ def finish_session():
     global wake_mode
     global command_mode
 
+    flush_transcription_buffer()
+
     if meeting_id is not None:
         end_meeting(meeting_id)
         meeting_id = None
@@ -228,13 +233,12 @@ def finish_session():
 
 def process_transcription(text):
     """
-    Save each finalized utterance in SQLite.
-    If a stop phrase occurs, end the current meeting.
+    Accumulate recognized utterances into approximately 30-second rows.
 
     Returns True when a stop phrase is detected.
     """
 
-    global meeting_id
+    global transcript_buffer_seconds
 
     text = text.strip().lower()
 
@@ -249,11 +253,31 @@ def process_transcription(text):
         )
         return False
 
-    # Save the utterance, including the stop phrase.
-    save_transcription(meeting_id, text)
+    transcript_buffer.append(text)
+    stop_detected = contains_phrase(text, STOP_PHRASES)
 
-    # Stop phrases are matched as whole phrases.
-    return contains_phrase(text, STOP_PHRASES)
+    if transcript_buffer_seconds >= SQLITE_CHUNK_SECONDS or stop_detected:
+        flush_transcription_buffer()
+
+    return stop_detected
+
+
+def flush_transcription_buffer():
+    global transcript_buffer_seconds
+
+    if not transcript_buffer:
+        return
+
+    if meeting_id is None:
+        print_status("Warning: no active meeting; buffered text not saved.")
+        transcript_buffer.clear()
+        transcript_buffer_seconds = 0.0
+        return
+
+    combined_text = "\n".join(transcript_buffer)
+    save_transcription(meeting_id, combined_text)
+    transcript_buffer.clear()
+    transcript_buffer_seconds = 0.0
 
 
 # ============================================================
@@ -273,6 +297,7 @@ def cleanup():
 
     try:
         if meeting_id is not None:
+            flush_transcription_buffer()
             end_meeting(meeting_id)
             meeting_id = None
     except Exception as exc:
@@ -397,13 +422,18 @@ def main():
                 silence_chunks >= SILENCE_CHUNKS
                 or len(audio_buffer) >= MAX_UTTERANCE_CHUNKS
             ):
+                audio_bytes = b"".join(audio_buffer)
+                utterance_duration = len(audio_bytes) / (
+                    SAMPLE_RATE * CHANNELS * 2
+                )
                 recognized_text = transcribe_audio(
                     recognizer,
-                    b"".join(audio_buffer),
+                    audio_bytes,
                 )
 
                 if recognized_text:
                     if command_mode:
+                        transcript_buffer_seconds += utterance_duration
                         if process_transcription(recognized_text):
                             finish_session()
 
