@@ -9,7 +9,7 @@ import sherpa_onnx
 # CONFIGURATION
 # ============================================================
 
-BASE_DIR = Path("/home/piuser/sathi-personal-ai-companion/rasp")
+BASE_DIR = Path(__file__).resolve().parent
 
 MODEL_DIR = BASE_DIR / "models" / "hi-hinglish-swift"
 
@@ -28,7 +28,7 @@ recognizer = sherpa_onnx.OfflineRecognizer.from_whisper(
     tokens=str(MODEL_DIR / "tokens.txt"),
     num_threads=2,
     decoding_method="greedy_search",
-    language="hi",
+    language="en",
     task="transcribe",
 )
 
