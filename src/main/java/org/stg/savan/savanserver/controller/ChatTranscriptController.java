@@ -14,6 +14,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Objects;
+
 @RestController
 public class ChatTranscriptController {
 
@@ -28,8 +30,17 @@ public class ChatTranscriptController {
     @PostMapping("/ai/transcripts")
     public ResponseEntity<?> saveTranscript(
             @RequestBody TranscriptRequest request) {
+        long startedAt = System.nanoTime();
         String transcriptText = request.combinedText();
+        int segmentCount = request.text() == null ? 0 : (int) request.text().stream()
+                .filter(Objects::nonNull)
+                .filter(segment -> !segment.isBlank())
+                .count();
+        log.info("Received /ai/transcripts request | requested_meeting_id={} | device={} | segments={} | characters={}",
+                request.meetingId(), request.device(), segmentCount, transcriptText.length());
+
         if (transcriptText.isBlank()) {
+            log.info("Rejected /ai/transcripts request | reason=empty_text");
             return ResponseEntity.badRequest()
                     .body(new ApiErrorResponse("A non-empty text array is required"));
         }
@@ -37,12 +48,16 @@ public class ChatTranscriptController {
         try {
             String meetingId = chatTranscriptService.saveTranscript(
                     transcriptText, request.device(), request.meetingId());
+            log.info("Completed /ai/transcripts request | meeting_id={} | characters={} | elapsed_ms={}",
+                    meetingId, transcriptText.length(), elapsedMillis(startedAt));
             return ResponseEntity.status(HttpStatus.CREATED)
                     .body(new TranscriptSaveResponse("saved", meetingId));
         } catch (IllegalArgumentException e) {
+            log.info("Rejected /ai/transcripts request | reason={}", e.getMessage());
             return ResponseEntity.badRequest().body(new ApiErrorResponse(e.getMessage()));
         } catch (RuntimeException e) {
-            log.error("Could not save transcript for ChatClient pipeline", e);
+            log.info("Failed /ai/transcripts request | exception={} | message={}",
+                    e.getClass().getSimpleName(), e.getMessage());
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                     .body(new ApiErrorResponse("Transcript storage is unavailable"));
         }
@@ -50,21 +65,35 @@ public class ChatTranscriptController {
 
     @PostMapping("/ai/qna")
     public ResponseEntity<?> answerQuestion(@RequestBody QuestionRequest request) {
-        if (request.question() == null || request.question().isBlank()) {
+        long startedAt = System.nanoTime();
+        String question = request.question();
+        log.info("Received /ai/qna request | meeting_id={} | question_characters={}",
+                request.meetingId(), question == null ? 0 : question.length());
+
+        if (question == null || question.isBlank()) {
+            log.info("Rejected /ai/qna request | reason=empty_question");
             return ResponseEntity.badRequest()
                     .body(new ApiErrorResponse("A non-empty question field is required"));
         }
 
         try {
             ChatAnswerResult result = chatTranscriptService.answerQuestion(
-                    request.question().trim(), request.meetingId());
+                    question.trim(), request.meetingId());
+            log.info("Completed /ai/qna request | meeting_id={} | sources={} | answer_characters={} | elapsed_ms={}",
+                    result.meetingId(), result.sources().size(), result.answer().length(), elapsedMillis(startedAt));
             return ResponseEntity.ok(result);
         } catch (IllegalArgumentException e) {
+            log.info("Rejected /ai/qna request | reason={}", e.getMessage());
             return ResponseEntity.badRequest().body(new ApiErrorResponse(e.getMessage()));
         } catch (RuntimeException e) {
-            log.error("ChatClient Q&A request failed", e);
+            log.info("Failed /ai/qna request | meeting_id={} | exception={} | message={}",
+                    request.meetingId(), e.getClass().getSimpleName(), e.getMessage());
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                     .body(new ApiErrorResponse("Chat answering is temporarily unavailable"));
         }
+    }
+
+    private static long elapsedMillis(long startedAt) {
+        return (System.nanoTime() - startedAt) / 1_000_000;
     }
 }
