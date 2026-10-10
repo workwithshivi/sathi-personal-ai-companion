@@ -16,18 +16,21 @@ def main():
         print(f"Waiting for button on BCM GPIO {BUTTON_PIN}.", flush=True)
 
         while True:
+            print("test 1")
             button = Button(
                 BUTTON_PIN,
                 pull_up=True,
                 bounce_time=0.1,
             )
-
+            print("test 2")
             try:
+                print("test 3")
                 button.wait_for_press()
                 button.wait_for_release()
+                print("test 4")
             finally:
                 button.close()
-
+                print("test 5")
             print("Starting voice Q&A.", flush=True)
             subprocess.run(
                 [sys.executable, str(ASK_MEMORY_SCRIPT)],
