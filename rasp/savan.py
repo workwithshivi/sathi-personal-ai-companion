@@ -1,8 +1,10 @@
 
 import signal
+import re
 import subprocess
 import sys
 import time
+import unicodedata
 from collections import deque
 from pathlib import Path
 
@@ -41,6 +43,14 @@ WAKE_WORDS = [
     "hey saavan",
     "hey seven",
     "hey pie",
+    "hey pi",
+    "hi pi",
+    "हे सावन",
+    "हे सवन",
+    "हे सेवन",
+    "हे पाई",
+    "हे पी",
+    "हाय पी",
 ]
 
 STOP_PHRASES = [
@@ -48,6 +58,14 @@ STOP_PHRASES = [
     "end meeting",
     "finish meeting",
     "close session",
+    "stop recording",
+    "end the meeting",
+    "finish the meeting",
+    "close the session",
+    "सुनना बंद करो",
+    "मीटिंग खत्म",
+    "बैठक खत्म",
+    "सत्र समाप्त",
 ]
 
 # PipeWire recording format:
@@ -74,6 +92,19 @@ running = True
 
 def print_status(message):
     print(f"\n[{time.strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+def normalize_text(text):
+    text = unicodedata.normalize("NFKC", text).casefold()
+    return " ".join(re.findall(r"[\w]+", text, flags=re.UNICODE))
+
+
+def contains_phrase(text, phrases):
+    normalized_text = f" {normalize_text(text)} "
+    return any(
+        f" {normalize_text(phrase)} " in normalized_text
+        for phrase in phrases
+    )
 
 
 # ============================================================
@@ -224,14 +255,7 @@ def process_transcription(text):
     save_transcription(meeting_id, text)
 
     # Stop phrases are matched as whole phrases.
-    normalized_text = " ".join(text.split())
-
-    stop_detected = any(
-        phrase in normalized_text
-        for phrase in STOP_PHRASES
-    )
-
-    return stop_detected
+    return contains_phrase(text, STOP_PHRASES)
 
 
 # ============================================================
@@ -360,8 +384,10 @@ def main():
                 if recognized_text:
                     if wake_mode:
                         print_status(f"Wake recognition: {recognized_text}")
-                        if any(phrase in recognized_text for phrase in WAKE_WORDS):
+                        if contains_phrase(recognized_text, WAKE_WORDS):
                             begin_session()
+                        else:
+                            print_status("Wake phrase not matched; still waiting.")
                     elif command_mode:
                         if process_transcription(recognized_text):
                             finish_session()
