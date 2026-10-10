@@ -46,11 +46,12 @@ def main():
                 )
                 while not button.is_pressed:
                     time.sleep(0.02)
-                led.on()
-                print("Button pressed; starting recording.", flush=True)
+                print("Button pressed; release to start listening.", flush=True)
+                while button.is_pressed:
+                    time.sleep(0.02)
             finally:
                 button.close()
-            print("Starting voice question capture.", flush=True)
+            print("Button released; starting voice question capture.", flush=True)
             led.on()
             try:
                 subprocess.run(

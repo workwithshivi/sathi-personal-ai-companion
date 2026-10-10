@@ -1,6 +1,7 @@
 
 import os
 import subprocess
+import threading
 import time
 import wave
 from pathlib import Path
@@ -44,16 +45,14 @@ def ask_server(question):
 def record_question_until_button():
     QUESTION_AUDIO_PATH.parent.mkdir(parents=True, exist_ok=True)
     audio_chunks = []
+    stop_recording = threading.Event()
 
     with Button(
         BUTTON_PIN,
         pull_up=BUTTON_PULL_UP,
         bounce_time=0.1,
     ) as button:
-        if not button.is_pressed:
-            print("Press and hold the button to speak your question.", flush=True)
-        while not button.is_pressed:
-            time.sleep(0.02)
+        button.when_pressed = stop_recording.set
 
         recorder = subprocess.Popen(
             [
@@ -71,16 +70,16 @@ def record_question_until_button():
         )
 
         try:
-            print("Listening while button is held; release to submit.", flush=True)
+            print("Listening. Press the button again to submit.", flush=True)
             if recorder.stdout is None:
                 raise RuntimeError("Could not read microphone audio.")
 
-            while button.is_pressed:
+            while not stop_recording.is_set():
                 chunk = recorder.stdout.read(AUDIO_CHUNK_BYTES)
                 if not chunk:
                     raise RuntimeError("Microphone recording stopped unexpectedly.")
                 audio_chunks.append(chunk)
-            print("Button released; processing question.", flush=True)
+            print("Button press detected; processing question.", flush=True)
         finally:
             if recorder.poll() is None:
                 recorder.terminate()
