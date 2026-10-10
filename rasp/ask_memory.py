@@ -21,7 +21,7 @@ MEETING_ID = os.environ.get(
     datetime.now().strftime("%Y%m%d"),
 )
 REQUEST_TIMEOUT_SECONDS = 120
-BUTTON_PIN = int(os.environ.get("SATHI_BUTTON_GPIO", "27"))
+BUTTON_PIN = int(os.environ.get("SATHI_BUTTON_GPIO", "22"))
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2
