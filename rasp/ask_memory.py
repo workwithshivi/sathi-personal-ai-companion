@@ -50,7 +50,9 @@ def record_question_until_button():
         pull_up=BUTTON_PULL_UP,
         bounce_time=0.1,
     ) as button:
-        while button.is_pressed:
+        if not button.is_pressed:
+            print("Press and hold the button to speak your question.", flush=True)
+        while not button.is_pressed:
             time.sleep(0.02)
 
         recorder = subprocess.Popen(
@@ -69,18 +71,16 @@ def record_question_until_button():
         )
 
         try:
-            print("Speak your question. Press the button again when finished.")
+            print("Listening while button is held; release to submit.", flush=True)
             if recorder.stdout is None:
                 raise RuntimeError("Could not read microphone audio.")
 
-            while True:
-                if button.is_pressed:
-                    print("Button press detected; stopping question recording.")
-                    break
+            while button.is_pressed:
                 chunk = recorder.stdout.read(AUDIO_CHUNK_BYTES)
                 if not chunk:
                     raise RuntimeError("Microphone recording stopped unexpectedly.")
                 audio_chunks.append(chunk)
+            print("Button released; processing question.", flush=True)
         finally:
             if recorder.poll() is None:
                 recorder.terminate()
