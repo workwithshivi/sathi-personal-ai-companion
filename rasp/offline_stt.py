@@ -5,7 +5,7 @@ import numpy as np
 import soundfile as sf
 import sherpa_onnx
 
-BASE_DIR = Path("/home/piuser/savan")
+BASE_DIR = Path("/home/piuser/sathi-personal-ai-companion/rasp")
 MODEL_DIR = BASE_DIR / "models" / "hi-hinglish-swift"
 
 SAMPLE_RATE = 48000

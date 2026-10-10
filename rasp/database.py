@@ -3,7 +3,7 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 
-DB_PATH = "/home/piuser/savan/voice_memory.db"
+DB_PATH = "/home/piuser/sathi-personal-ai-companion/rasp/voice_memory.db"
 
 
 def now():

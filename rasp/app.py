@@ -4,7 +4,7 @@ from audio_recorder import record_audio
 from offline_stt_func import transcribe_wav
 
 
-BASE_DIR = Path("/home/piuser/savan")
+BASE_DIR = Path("/home/piuser/sathi-personal-ai-companion/rasp")
 
 RECORDINGS_DIR = BASE_DIR / "recordings"
 

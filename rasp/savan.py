@@ -29,7 +29,7 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 
 MODEL_PATH = (
-    "/home/piuser/savan/"
+    "/home/piuser/sathi-personal-ai-companion/rasp"
     "vosk-model-small-en-us-0.15"
 )
 

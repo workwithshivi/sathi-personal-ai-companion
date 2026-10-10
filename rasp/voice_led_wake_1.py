@@ -19,7 +19,7 @@ GPIO_PIN = 17
 MIC_TARGET = "90"
 
 # Vosk model
-MODEL_PATH = "/home/piuser/savan/vosk-model-small-en-us-0.15"
+MODEL_PATH = "/home/piuser/sathi-personal-ai-companion/rasp/vosk-model-small-en-us-0.15"
 
 # Audio
 SAMPLE_RATE = 16000
@@ -39,7 +39,7 @@ SILENCE_TIMEOUT = 5.0
 SILENCE_THRESHOLD = 500
 
 # All recognized speech is appended here
-TRANSCRIPTION_FILE = "/home/piuser/savan/transcriptions.txt"
+TRANSCRIPTION_FILE = "/home/piuser/sathi-personal-ai-companion/rasp/transcriptions.txt"
 
 
 # ============================================================

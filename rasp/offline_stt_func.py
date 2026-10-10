@@ -9,7 +9,7 @@ import sherpa_onnx
 # CONFIGURATION
 # ============================================================
 
-BASE_DIR = Path("/home/piuser/savan")
+BASE_DIR = Path("/home/piuser/sathi-personal-ai-companion/rasp")
 
 MODEL_DIR = BASE_DIR / "models" / "hi-hinglish-swift"
 
