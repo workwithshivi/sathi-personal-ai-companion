@@ -1,11 +1,14 @@
 
 import os
+import subprocess
+import threading
+import wave
 from datetime import datetime
 from pathlib import Path
 
 import requests
+from gpiozero import Button
 
-from audio_recorder import record_audio
 from offline_stt_func import transcribe_wav
 from tts_engine import speak
 
@@ -18,7 +21,11 @@ MEETING_ID = os.environ.get(
     datetime.now().strftime("%Y%m%d"),
 )
 REQUEST_TIMEOUT_SECONDS = 120
-RECORD_SECONDS = int(os.environ.get("SATHI_QUESTION_RECORD_SECONDS", "10"))
+BUTTON_PIN = int(os.environ.get("SATHI_BUTTON_GPIO", "27"))
+SAMPLE_RATE = 16000
+CHANNELS = 1
+SAMPLE_WIDTH_BYTES = 2
+AUDIO_CHUNK_BYTES = 4000
 QUESTION_AUDIO_PATH = (
     Path(__file__).resolve().parent / "recordings" / "memory_question.wav"
 )
@@ -38,8 +45,71 @@ def ask_server(question):
     return response.json()
 
 
+def record_question_until_button():
+    QUESTION_AUDIO_PATH.parent.mkdir(parents=True, exist_ok=True)
+    stop_recording = threading.Event()
+    audio_chunks = []
+
+    with Button(
+        BUTTON_PIN,
+        pull_up=True,
+        bounce_time=0.1,
+    ) as button:
+        button.wait_for_release()
+        button.when_pressed = stop_recording.set
+
+        recorder = subprocess.Popen(
+            [
+                "arecord",
+                "-q",
+                "-t", "raw",
+                "-f", "S16_LE",
+                "-r", str(SAMPLE_RATE),
+                "-c", str(CHANNELS),
+                "-",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+        )
+
+        try:
+            print("Speak your question. Press the button again when finished.")
+            if recorder.stdout is None:
+                raise RuntimeError("Could not read microphone audio.")
+
+            while not stop_recording.is_set():
+                chunk = recorder.stdout.read(AUDIO_CHUNK_BYTES)
+                if not chunk:
+                    raise RuntimeError("Microphone recording stopped unexpectedly.")
+                audio_chunks.append(chunk)
+        finally:
+            if recorder.poll() is None:
+                recorder.terminate()
+                try:
+                    recorder.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    recorder.kill()
+                    recorder.wait(timeout=2)
+
+            if recorder.stdout is not None:
+                recorder.stdout.close()
+
+    audio_data = b"".join(audio_chunks)
+    if not audio_data:
+        return ""
+
+    with wave.open(str(QUESTION_AUDIO_PATH), "wb") as audio_file:
+        audio_file.setnchannels(CHANNELS)
+        audio_file.setsampwidth(SAMPLE_WIDTH_BYTES)
+        audio_file.setframerate(SAMPLE_RATE)
+        audio_file.writeframes(audio_data)
+
+    return transcribe_wav(QUESTION_AUDIO_PATH).strip()
+
+
 def main():
-    print("Sathi voice Q&A. Press Ctrl+C to stop.")
+    print("Sathi voice Q&A. Press the button once to finish each question.")
     print(f"API: {QNA_API_URL}")
     if MEETING_ID:
         print(f"Meeting scope: {MEETING_ID}")
@@ -48,11 +118,8 @@ def main():
 
     while True:
         try:
-            record_audio(
-                output_file=QUESTION_AUDIO_PATH,
-                duration=RECORD_SECONDS,
-            )
-            question = transcribe_wav(QUESTION_AUDIO_PATH).strip()
+            speak("Please ask your question. Press the button when you are done.")
+            question = record_question_until_button()
         except KeyboardInterrupt:
             print("\nGoodbye!")
             break

@@ -1,15 +1,55 @@
-import RPi.GPIO as GPIO
-import time
+import os
+import subprocess
+import sys
+from pathlib import Path
 
-GPIO.setmode(GPIO.BCM)
-GPIO.setup(22, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+from gpiozero import Button, LED
 
-print("Waiting for button press...")
 
-try:
-    while True:
-        if GPIO.input(22) == GPIO.HIGH:
-            print("Button pressed!")
-            time.sleep(0.3)  # debounce delay
-except KeyboardInterrupt:
-    GPIO.cleanup()
+BUTTON_PIN = int(os.environ.get("SATHI_BUTTON_GPIO", "27"))
+LED_PIN = 22
+SCRIPT_DIR = Path(__file__).resolve().parent
+ASK_MEMORY_SCRIPT = SCRIPT_DIR / "ask_memory.py"
+
+
+def main():
+    led = LED(LED_PIN)
+
+    try:
+        print(f"Waiting for button on BCM GPIO {BUTTON_PIN}.", flush=True)
+
+        while True:
+            button = Button(
+                BUTTON_PIN,
+                pull_up=True,
+                bounce_time=0.1,
+            )
+
+            try:
+                button.wait_for_press()
+                button.wait_for_release()
+            finally:
+                button.close()
+
+            print("Starting voice Q&A.", flush=True)
+            led.on()
+
+            try:
+                subprocess.run(
+                    [sys.executable, str(ASK_MEMORY_SCRIPT)],
+                    cwd=SCRIPT_DIR,
+                    check=False,
+                )
+            finally:
+                led.off()
+
+            print("Q&A finished. Waiting for button.", flush=True)
+    except KeyboardInterrupt:
+        print("\nButton service stopped.", flush=True)
+    finally:
+        led.off()
+        led.close()
+
+
+if __name__ == "__main__":
+    main()
