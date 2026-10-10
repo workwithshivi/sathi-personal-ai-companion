@@ -1,0 +1,8 @@
+[2026-10-06 13:38:24] [WAKE] hey pie
+[2026-10-06 13:38:27] [SPEECH] what is the medical big
+[2026-10-06 13:38:30] [SPEECH] can listen me
+[2026-10-06 13:38:33] [SPEECH] thank you
+[2026-10-06 13:38:35] [SPEECH] turn off
+[2026-10-08 07:59:02] [WAKE] hey pie
+[2026-10-08 07:59:06] [SPEECH] don't have a leading
+[2026-10-08 07:59:26] [SPEECH] huh

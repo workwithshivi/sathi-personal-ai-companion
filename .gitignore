@@ -31,3 +31,12 @@ build/
 
 ### VS Code ###
 .vscode/
+
+/rasp/venv
+./rasp/venv
+/rasp/models
+./rasp/models
+/rasp/vosk-model-small-en-us-0.15
+./rasp/vosk-model-small-en-us-0.15
+./rasp/__pycache__
+/rasp/__pycache__
