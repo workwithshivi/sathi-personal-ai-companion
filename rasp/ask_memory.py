@@ -1,5 +1,6 @@
 
 import os
+from datetime import datetime
 
 import requests
 
@@ -9,7 +10,10 @@ QNA_API_URL = os.environ.get(
     "SATHI_QNA_URL",
     "http://10.153.210.18:8080/ai/qna",
 )
-MEETING_ID = os.environ.get("SATHI_MEETING_ID")
+MEETING_ID = os.environ.get(
+    "SATHI_MEETING_ID",
+    datetime.now().strftime("%Y%m%d"),
+)
 REQUEST_TIMEOUT_SECONDS = 120
 
 

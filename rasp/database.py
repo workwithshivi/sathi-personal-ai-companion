@@ -76,12 +76,16 @@ def init_db():
 
 
 def start_meeting():
-    meeting_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    meeting_id = datetime.now().strftime("%Y%m%d")
 
     with get_connection() as conn:
         conn.execute("""
             INSERT INTO meetings (meeting_id, started_at, status)
             VALUES (?, ?, 'active')
+            ON CONFLICT(meeting_id) DO UPDATE SET
+                started_at = excluded.started_at,
+                ended_at = NULL,
+                status = 'active'
         """, (meeting_id, now()))
 
     print(f"Meeting started: {meeting_id}")
