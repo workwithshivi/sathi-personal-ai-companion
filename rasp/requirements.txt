@@ -5,4 +5,5 @@ piper-tts
 requests
 vosk
 gpiozero
+lgpio
 sounddevice

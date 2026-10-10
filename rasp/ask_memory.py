@@ -7,6 +7,9 @@ from datetime import datetime
 from pathlib import Path
 
 import requests
+
+os.environ.setdefault("GPIOZERO_PIN_FACTORY", "lgpio")
+
 from gpiozero import Button
 
 from offline_stt_func import transcribe_wav

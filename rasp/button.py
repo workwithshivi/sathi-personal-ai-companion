@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+os.environ.setdefault("GPIOZERO_PIN_FACTORY", "lgpio")
+
 from gpiozero import Button
 
 
