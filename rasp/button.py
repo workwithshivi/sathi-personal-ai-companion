@@ -9,6 +9,7 @@ from gpiozero import Button
 
 
 BUTTON_PIN = int(os.environ.get("SATHI_BUTTON_GPIO", "22"))
+BUTTON_PULL_UP = os.environ.get("SATHI_BUTTON_PULL_UP", "true").lower() == "true"
 SCRIPT_DIR = Path(__file__).resolve().parent
 ASK_MEMORY_SCRIPT = SCRIPT_DIR / "ask_memory.py"
 
@@ -18,21 +19,23 @@ def main():
         print(f"Waiting for button on BCM GPIO {BUTTON_PIN}.", flush=True)
 
         while True:
-            print("test 1")
             button = Button(
                 BUTTON_PIN,
-                pull_up=True,
+                pull_up=BUTTON_PULL_UP,
                 bounce_time=0.1,
             )
-            print("test 2")
             try:
-                print("test 3")
+                print(
+                    f"Button ready: BCM {BUTTON_PIN}, "
+                    f"pull_up={BUTTON_PULL_UP}, "
+                    f"initial_pressed={button.is_pressed}.",
+                    flush=True,
+                )
                 button.wait_for_press()
+                print("Button press detected; release it to start Q&A.", flush=True)
                 button.wait_for_release()
-                print("test 4")
             finally:
                 button.close()
-                print("test 5")
             print("Starting voice Q&A.", flush=True)
             subprocess.run(
                 [sys.executable, str(ASK_MEMORY_SCRIPT)],

@@ -25,6 +25,7 @@ MEETING_ID = os.environ.get(
 )
 REQUEST_TIMEOUT_SECONDS = 120
 BUTTON_PIN = int(os.environ.get("SATHI_BUTTON_GPIO", "22"))
+BUTTON_PULL_UP = os.environ.get("SATHI_BUTTON_PULL_UP", "true").lower() == "true"
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2
@@ -55,7 +56,7 @@ def record_question_until_button():
 
     with Button(
         BUTTON_PIN,
-        pull_up=True,
+        pull_up=BUTTON_PULL_UP,
         bounce_time=0.1,
     ) as button:
         button.wait_for_release()
