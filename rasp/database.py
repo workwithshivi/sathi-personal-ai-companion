@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 DB_PATH = "/home/piuser/sathi-personal-ai-companion/rasp/voice_memory.db"
-SYNC_PENDING_THRESHOLD = 10
+SYNC_PENDING_THRESHOLD = 2
 SYNC_LOCK_PATH = "/tmp/sathi-sync.lock"
 
 _sync_process = None
