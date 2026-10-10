@@ -3,18 +3,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-from gpiozero import Button, LED
+from gpiozero import Button
 
 
-BUTTON_PIN = int(os.environ.get("SATHI_BUTTON_GPIO", "27"))
-LED_PIN = 22
+BUTTON_PIN = int(os.environ.get("SATHI_BUTTON_GPIO", "22"))
 SCRIPT_DIR = Path(__file__).resolve().parent
 ASK_MEMORY_SCRIPT = SCRIPT_DIR / "ask_memory.py"
 
 
 def main():
-    led = LED(LED_PIN)
-
     try:
         print(f"Waiting for button on BCM GPIO {BUTTON_PIN}.", flush=True)
 
@@ -32,23 +29,15 @@ def main():
                 button.close()
 
             print("Starting voice Q&A.", flush=True)
-            led.on()
-
-            try:
-                subprocess.run(
-                    [sys.executable, str(ASK_MEMORY_SCRIPT)],
-                    cwd=SCRIPT_DIR,
-                    check=False,
-                )
-            finally:
-                led.off()
+            subprocess.run(
+                [sys.executable, str(ASK_MEMORY_SCRIPT)],
+                cwd=SCRIPT_DIR,
+                check=False,
+            )
 
             print("Q&A finished. Waiting for button.", flush=True)
     except KeyboardInterrupt:
         print("\nButton service stopped.", flush=True)
-    finally:
-        led.off()
-        led.close()
 
 
 if __name__ == "__main__":
