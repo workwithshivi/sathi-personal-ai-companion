@@ -1,27 +1,30 @@
 
 import os
+from collections import defaultdict
+from datetime import datetime, timezone
+
 import requests
 
-from datetime import datetime, timezone
 from database import get_connection
 
 API_URL = os.environ.get(
     "TRANSCRIPTION_API_URL",
-    "http://10.153.210.18:8080/api/transcripts"
+    "http://10.153.210.18:8080/ai/transcripts"
 )
 
-DEVICE_ID = "raspberrypi-01"
-BATCH_SIZE = 5
+DEVICE_NAME = os.environ.get("TRANSCRIPTION_DEVICE", "raspberrypi-01")
+BATCH_SIZE = 50
 TIMEOUT_SECONDS = 20
 
 
 def sync_batch():
-    # Fetch a bounded batch of pending records.
+    # Fetch a bounded batch; one cron run never drains an unlimited backlog.
     with get_connection() as conn:
         rows = conn.execute("""
             SELECT id, meeting_id, timestamp, text
             FROM transcriptions
             WHERE sync_status = 'pending'
+              AND meeting_id IS NOT NULL
             ORDER BY id
             LIMIT ?
         """, (BATCH_SIZE,)).fetchall()
@@ -30,63 +33,62 @@ def sync_batch():
         print("No pending records to sync.")
         return 0
 
-    payload = {
-        "device_id": DEVICE_ID,
-        "records": [dict(row) for row in rows]
-    }
+    grouped_rows = defaultdict(list)
+    for row in rows:
+        grouped_rows[row["meeting_id"]].append(row)
 
-    try:
-        response = requests.post(
-            API_URL,
-            json=payload,
-            timeout=TIMEOUT_SECONDS
-        )
-        response.raise_for_status()
-        result = response.json()
+    total_synced = 0
 
-        acknowledged_ids = {
-            int(record_id)
-            for record_id in result.get("synced_ids", [])
+    for meeting_id, meeting_rows in grouped_rows.items():
+        payload = {
+            "text": [row["text"] for row in meeting_rows],
+            "device": DEVICE_NAME,
+            "meeting_id": meeting_id,
         }
-        submitted_ids = {row["id"] for row in rows}
 
-        # Reject acknowledgements for records not in this batch.
-        acknowledged_ids &= submitted_ids
+        try:
+            response = requests.post(
+                API_URL,
+                json=payload,
+                timeout=TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            result = response.json()
 
-        if not acknowledged_ids:
-            print("API acknowledged no records.")
-            return 0
+            if result.get("status") != "saved":
+                raise ValueError(f"Unexpected API response: {result}")
 
-        synced_at = datetime.now(
-            timezone.utc
-        ).isoformat(timespec="seconds")
+            synced_at = datetime.now(
+                timezone.utc
+            ).isoformat(timespec="seconds")
+            record_ids = [row["id"] for row in meeting_rows]
+            placeholders = ",".join("?" for _ in record_ids)
 
-        with get_connection() as conn:
-            conn.executemany("""
-                UPDATE transcriptions
-                SET sync_status = 'synced',
-                    synced_at = ?,
-                    sync_attempts = sync_attempts + 1
-                WHERE id = ? AND sync_status = 'pending'
-            """, [
-                (synced_at, record_id)
-                for record_id in acknowledged_ids
-            ])
+            with get_connection() as conn:
+                conn.execute(f"""
+                    UPDATE transcriptions
+                    SET sync_status = 'synced',
+                        synced_at = ?,
+                        sync_attempts = sync_attempts + 1
+                    WHERE sync_status = 'pending'
+                      AND id IN ({placeholders})
+                """, [synced_at, *record_ids])
 
-        print(f"Synced {len(acknowledged_ids)} records.")
-        return len(acknowledged_ids)
+            total_synced += len(record_ids)
+            print(f"Synced {len(record_ids)} records for meeting {meeting_id}.")
 
-    except (requests.RequestException, ValueError) as exc:
-        # Failed records stay pending and will be retried.
-        with get_connection() as conn:
-            conn.executemany("""
-                UPDATE transcriptions
-                SET sync_attempts = sync_attempts + 1
-                WHERE id = ? AND sync_status = 'pending'
-            """, [(row["id"],) for row in rows])
+        except (requests.RequestException, ValueError) as exc:
+            with get_connection() as conn:
+                conn.executemany("""
+                    UPDATE transcriptions
+                    SET sync_attempts = sync_attempts + 1
+                    WHERE id = ? AND sync_status = 'pending'
+                """, [(row["id"],) for row in meeting_rows])
 
-        print(f"Batch sync failed: {exc}")
-        return 0
+            print(f"Sync failed for meeting {meeting_id}: {exc}")
+
+    print(f"Total records synced: {total_synced}")
+    return total_synced
 
 
 if __name__ == "__main__":
