@@ -12,19 +12,24 @@ from gpiozero import Button, LED
 BUTTON_PIN = int(os.environ.get("SATHI_BUTTON_GPIO", "22"))
 BUTTON_PULL_UP = os.environ.get("SATHI_BUTTON_PULL_UP", "true").lower() == "true"
 LED_PIN = int(os.environ.get("SATHI_LED_GPIO", "23"))
+LED_ACTIVE_HIGH = os.environ.get("SATHI_LED_ACTIVE_HIGH", "true").lower() == "true"
 SCRIPT_DIR = Path(__file__).resolve().parent
 ASK_MEMORY_SCRIPT = SCRIPT_DIR / "ask_memory.py"
 
 
 def main():
-    led = LED(LED_PIN)
+    led = LED(LED_PIN, active_high=LED_ACTIVE_HIGH)
 
     try:
         print(
             f"Waiting for button on BCM GPIO {BUTTON_PIN}; "
-            f"session LED on BCM GPIO {LED_PIN}.",
+            f"session LED on BCM GPIO {LED_PIN}, "
+            f"active_high={LED_ACTIVE_HIGH}.",
             flush=True,
         )
+        led.on()
+        time.sleep(0.5)
+        led.off()
 
         while True:
             button = Button(
