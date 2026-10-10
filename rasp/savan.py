@@ -163,7 +163,7 @@ def create_recognizer():
         tokens=str(MODEL_DIR / "tokens.txt"),
         num_threads=2,
         decoding_method="greedy_search",
-        language="hi",
+        language="en",
         task="transcribe",
     )
 
