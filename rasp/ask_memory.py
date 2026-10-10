@@ -12,7 +12,6 @@ os.environ.setdefault("GPIOZERO_PIN_FACTORY", "lgpio")
 
 from gpiozero import Button
 
-from offline_stt_func import transcribe_wav
 from tts_engine import speak
 
 QNA_API_URL = os.environ.get(
@@ -111,51 +110,51 @@ def record_question_until_button():
         audio_file.setframerate(SAMPLE_RATE)
         audio_file.writeframes(audio_data)
 
+    from offline_stt_func import transcribe_wav
+
     return transcribe_wav(QUESTION_AUDIO_PATH).strip()
 
 
 def main():
-    print("Sathi voice Q&A. Press the button once to finish each question.")
+    print("Sathi voice Q&A. Press the button to stop recording.")
     print(f"API: {QNA_API_URL}")
     if MEETING_ID:
         print(f"Meeting scope: {MEETING_ID}")
     else:
         print("Meeting scope: all available meetings")
 
-    while True:
+    try:
+        question = record_question_until_button()
+    except KeyboardInterrupt:
+        print("\nQuestion cancelled.")
+        return
+    except Exception as error:
+        print(f"Question recording/transcription error: {error}")
+        return
+
+    if not question:
+        print("No question recognized.")
+        return
+
+    print(f"\nYou: {question}")
+
+    try:
+        result = ask_server(question)
+        answer = str(result.get("answer", "")).strip()
+
+        if not answer:
+            print("Sathi: The API returned an empty answer.")
+            return
+
+        print("\nSathi:", answer)
+
         try:
-            speak("Please ask your question. Press the button when you are done.")
-            question = record_question_until_button()
-        except KeyboardInterrupt:
-            print("\nGoodbye!")
-            break
+            speak(answer)
         except Exception as error:
-            print(f"Question recording/transcription error: {error}")
-            continue
+            print(f"TTS error: {error}")
 
-        if not question:
-            print("No question recognized. Try again.")
-            continue
-
-        print(f"\nYou: {question}")
-
-        try:
-            result = ask_server(question)
-            answer = str(result.get("answer", "")).strip()
-
-            if not answer:
-                print("Sathi: The API returned an empty answer.")
-                continue
-
-            print("\nSathi:", answer)
-
-            try:
-                speak(answer)
-            except Exception as error:
-                print(f"TTS error: {error}")
-
-        except (requests.RequestException, ValueError) as error:
-            print(f"Q&A API error: {error}")
+    except (requests.RequestException, ValueError) as error:
+        print(f"Q&A API error: {error}")
 
 
 if __name__ == "__main__":
