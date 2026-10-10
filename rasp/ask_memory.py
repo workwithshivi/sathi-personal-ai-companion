@@ -1,7 +1,7 @@
 
 import os
 import subprocess
-import threading
+import time
 import wave
 from datetime import datetime
 from pathlib import Path
@@ -51,7 +51,6 @@ def ask_server(question):
 
 def record_question_until_button():
     QUESTION_AUDIO_PATH.parent.mkdir(parents=True, exist_ok=True)
-    stop_recording = threading.Event()
     audio_chunks = []
 
     with Button(
@@ -59,8 +58,8 @@ def record_question_until_button():
         pull_up=BUTTON_PULL_UP,
         bounce_time=0.1,
     ) as button:
-        button.wait_for_release()
-        button.when_pressed = stop_recording.set
+        while button.is_pressed:
+            time.sleep(0.02)
 
         recorder = subprocess.Popen(
             [
@@ -82,7 +81,10 @@ def record_question_until_button():
             if recorder.stdout is None:
                 raise RuntimeError("Could not read microphone audio.")
 
-            while not stop_recording.is_set():
+            while True:
+                if button.is_pressed:
+                    print("Button press detected; stopping question recording.")
+                    break
                 chunk = recorder.stdout.read(AUDIO_CHUNK_BYTES)
                 if not chunk:
                     raise RuntimeError("Microphone recording stopped unexpectedly.")

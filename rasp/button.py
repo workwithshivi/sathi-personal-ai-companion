@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 os.environ.setdefault("GPIOZERO_PIN_FACTORY", "lgpio")
@@ -31,9 +32,12 @@ def main():
                     f"initial_pressed={button.is_pressed}.",
                     flush=True,
                 )
-                button.wait_for_press()
+                while not button.is_pressed:
+                    time.sleep(0.02)
                 print("Button press detected; release it to start Q&A.", flush=True)
-                button.wait_for_release()
+                while button.is_pressed:
+                    time.sleep(0.02)
+                print("Button released; starting Q&A.", flush=True)
             finally:
                 button.close()
             print("Starting voice Q&A.", flush=True)
