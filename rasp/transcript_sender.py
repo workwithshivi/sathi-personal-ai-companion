@@ -3,7 +3,7 @@
 Runs on the Raspberry Pi.
 Reads unsent transcript rows from SQLite and POSTs them to the laptop.
 Rows are marked sent=1 only after the laptop confirms receipt, so nothing is
-lost if the network drops. Safe to run while the Vosk script keeps writing.
+lost if the network drops. Safe to run while savan.py keeps writing.
 
 Install:  pip install requests
 Run:      python3 pi_sender.py

@@ -1,13 +1,14 @@
 
-import json
-import os
 import signal
 import subprocess
 import sys
 import time
+from collections import deque
+from pathlib import Path
 
 from gpiozero import LED
-from vosk import Model, KaldiRecognizer
+import numpy as np
+import sherpa_onnx
 
 from database import (
     init_db,
@@ -28,9 +29,11 @@ MIC_TARGET = "90"
 SAMPLE_RATE = 16000
 CHANNELS = 1
 
-MODEL_PATH = (
-    "/home/piuser/sathi-personal-ai-companion/rasp"
-    "vosk-model-small-en-us-0.15"
+MODEL_DIR = Path(__file__).resolve().parent / "models" / "hi-hinglish-swift"
+MODEL_FILES = (
+    MODEL_DIR / "encoder.int8.onnx",
+    MODEL_DIR / "decoder.int8.onnx",
+    MODEL_DIR / "tokens.txt",
 )
 
 WAKE_WORDS = [
@@ -50,6 +53,9 @@ STOP_PHRASES = [
 # PipeWire recording format:
 # 16-bit signed PCM, 16 kHz, mono.
 AUDIO_CHUNK_SIZE = 4000
+SPEECH_THRESHOLD = 0.005
+SILENCE_CHUNKS = 6
+MAX_UTTERANCE_CHUNKS = 160
 
 
 # ============================================================
@@ -116,46 +122,40 @@ def start_microphone():
 
 
 # ============================================================
-# VOSK RECOGNIZERS
+# SHERPA-ONNX RECOGNIZER
 # ============================================================
 
-def create_wake_recognizer(model):
-    """
-    Restricted vocabulary is appropriate for wake-word mode.
-    """
-
-    grammar = json.dumps(
-        WAKE_WORDS + ["[unk]"]
-    )
-
-    return KaldiRecognizer(
-        model,
-        SAMPLE_RATE,
-        grammar,
+def create_recognizer():
+    return sherpa_onnx.OfflineRecognizer.from_whisper(
+        encoder=str(MODEL_DIR / "encoder.int8.onnx"),
+        decoder=str(MODEL_DIR / "decoder.int8.onnx"),
+        tokens=str(MODEL_DIR / "tokens.txt"),
+        num_threads=2,
+        decoding_method="greedy_search",
+        language="hi",
+        task="transcribe",
     )
 
 
-def create_speech_recognizer(model):
-    """
-    No grammar is supplied, so Vosk can recognize general speech.
-    """
+def transcribe_audio(recognizer, audio_bytes):
+    samples = np.frombuffer(audio_bytes, dtype="<i2")
+    audio = samples.astype(np.float32) / 32768.0
 
-    recognizer = KaldiRecognizer(
-        model,
-        SAMPLE_RATE,
-    )
+    if audio.size == 0 or np.max(np.abs(audio)) < SPEECH_THRESHOLD:
+        return ""
 
-    # Include word-level details in the result if needed later.
-    recognizer.SetWords(True)
+    stream = recognizer.create_stream()
+    stream.accept_waveform(SAMPLE_RATE, audio)
+    recognizer.decode_stream(stream)
 
-    return recognizer
+    return stream.result.text.strip().lower()
 
 
 # ============================================================
 # SESSION MANAGEMENT
 # ============================================================
 
-def begin_session(model):
+def begin_session():
     global meeting_id
     global wake_mode
     global command_mode
@@ -175,10 +175,7 @@ def begin_session(model):
         "Say 'stop listening' or 'end meeting' to finish."
     )
 
-    return create_speech_recognizer(model)
-
-
-def finish_session(model):
+def finish_session():
     global meeting_id
     global wake_mode
     global command_mode
@@ -195,9 +192,6 @@ def finish_session(model):
     print_status("Meeting ended.")
     print_status("LED OFF")
     print_status("Waiting for wake word: Hey Pi")
-
-    return create_wake_recognizer(model)
-
 
 # ============================================================
 # TRANSCRIPTION PROCESSING
@@ -290,28 +284,30 @@ def cleanup():
 
 def main():
     global mic_process
-    global wake_mode
-    global command_mode
 
-    if not os.path.isdir(MODEL_PATH):
+    missing_models = [path for path in MODEL_FILES if not path.is_file()]
+    if missing_models:
         raise FileNotFoundError(
-            f"Vosk model directory not found: {MODEL_PATH}"
+            "Sherpa-ONNX Whisper model files not found: "
+            + ", ".join(str(path) for path in missing_models)
         )
 
     print_status("Initializing SQLite database...")
     init_db()
 
-    print_status("Loading Vosk model...")
-    model = Model(MODEL_PATH)
-
-    wake_recognizer = create_wake_recognizer(model)
-    speech_recognizer = None
+    print_status("Loading Sherpa-ONNX Whisper model...")
+    recognizer = create_recognizer()
 
     mic_process = start_microphone()
 
-    print_status("Vosk model loaded.")
+    print_status("Sherpa-ONNX model loaded.")
     print_status("Bluetooth microphone started.")
     print_status("Waiting for wake word: Hey Pi")
+
+    audio_buffer = []
+    pre_roll = deque(maxlen=2)
+    silence_chunks = 0
+    recording_utterance = False
 
     while running:
 
@@ -336,74 +332,44 @@ def main():
             time.sleep(0.02)
             continue
 
-        # ----------------------------------------------------
-        # WAKE WORD MODE
-        # ----------------------------------------------------
+        pcm_samples = np.frombuffer(data, dtype="<i2").astype(np.int32)
+        peak = np.max(np.abs(pcm_samples)) / 32768.0
 
-        if wake_mode:
+        if not recording_utterance:
+            pre_roll.append(data)
+            if peak >= SPEECH_THRESHOLD:
+                audio_buffer = list(pre_roll)
+                recording_utterance = True
+                silence_chunks = 0
+        else:
+            audio_buffer.append(data)
+            if peak < SPEECH_THRESHOLD:
+                silence_chunks += 1
+            else:
+                silence_chunks = 0
 
-            if wake_recognizer.AcceptWaveform(data):
-                result = json.loads(
-                    wake_recognizer.Result()
+            if (
+                silence_chunks >= SILENCE_CHUNKS
+                or len(audio_buffer) >= MAX_UTTERANCE_CHUNKS
+            ):
+                recognized_text = transcribe_audio(
+                    recognizer,
+                    b"".join(audio_buffer),
                 )
 
-                recognized_text = (
-                    result.get("text", "")
-                    .strip()
-                    .lower()
-                )
+                if recognized_text:
+                    if wake_mode:
+                        print_status(f"Wake recognition: {recognized_text}")
+                        if any(phrase in recognized_text for phrase in WAKE_WORDS):
+                            begin_session()
+                    elif command_mode:
+                        if process_transcription(recognized_text):
+                            finish_session()
 
-                if not recognized_text:
-                    continue
-
-                print_status(
-                    f"Wake recognition: {recognized_text}"
-                )
-
-                wake_detected = any(
-                    word in recognized_text
-                    for word in WAKE_WORDS
-                )
-
-                if wake_detected:
-                    speech_recognizer = begin_session(model)
-
-                    # Prevent any residual wake-word audio from
-                    # being used as the first speech utterance.
-                    wake_recognizer = create_wake_recognizer(model)
-
-            continue
-
-        # ----------------------------------------------------
-        # ACTIVE MEETING MODE
-        # ----------------------------------------------------
-
-        if command_mode and speech_recognizer is not None:
-
-            if speech_recognizer.AcceptWaveform(data):
-                result = json.loads(
-                    speech_recognizer.Result()
-                )
-
-                recognized_text = (
-                    result.get("text", "")
-                    .strip()
-                    .lower()
-                )
-
-                if not recognized_text:
-                    continue
-
-                stop_detected = process_transcription(
-                    recognized_text
-                )
-
-                if stop_detected:
-                    wake_recognizer = finish_session(model)
-                    speech_recognizer = None
-
-            # Do not use a silence timeout.
-            # Continue listening until a stop phrase is recognized.
+                audio_buffer = []
+                pre_roll.clear()
+                silence_chunks = 0
+                recording_utterance = False
 
 
 if __name__ == "__main__":
