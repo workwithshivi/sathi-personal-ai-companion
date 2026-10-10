@@ -67,7 +67,7 @@ AUDIO_CHUNK_SIZE = 4000
 SPEECH_THRESHOLD = 0.005
 SILENCE_CHUNKS = 6
 MAX_UTTERANCE_CHUNKS = 160
-SQLITE_CHUNK_SECONDS = 30.0
+SQLITE_CHUNK_SECONDS = 10.0
 
 
 # ============================================================
