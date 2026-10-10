@@ -331,6 +331,7 @@ def cleanup():
 
 def main():
     global mic_process
+    global transcript_buffer_seconds
 
     if not VOSK_MODEL_DIR.is_dir():
         raise FileNotFoundError(
