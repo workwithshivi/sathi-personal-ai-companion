@@ -15,6 +15,7 @@ import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Service;
 
+import java.text.Normalizer;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,6 +27,10 @@ import java.util.stream.Collectors;
 public class ChatTranscriptServiceImpl implements ChatTranscriptService {
 
     private static final Logger log = LoggerFactory.getLogger(ChatTranscriptServiceImpl.class);
+    private static final Pattern DEFINITION_QUESTION = Pattern.compile(
+            "(?iu)^\\s*(?:what\\s+is|what's|define|explain)\\s+(?:the\\s+)?(.+?)\\s*[?.!]*\\s*$");
+    private static final Pattern DESCRIPTIVE_TERM = Pattern.compile(
+            "(?iu)\\b(?:assistant|application|system|project|tool|platform|service|product|prototype|software)\\b");
 
     private final VectorStore vectorStore;
     private final TokenTextSplitter textSplitter;
@@ -54,6 +59,10 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
                 "meeting_id", meetingId,
                 "pipeline", SathiConstants.CHAT_PIPELINE));
         List<Document> chunks = textSplitter.apply(List.of(source));
+        for (int index = 0; index < chunks.size(); index++) {
+            log.info("Transcript storage chunk {}/{} | meeting_id={} | content=\n{}",
+                    index + 1, chunks.size(), meetingId, chunks.get(index).getText());
+        }
 
         vectorStore.add(chunks);
         log.info("Stored ChatClient transcript | meeting_id={} | chunks={} | device={}",
@@ -87,6 +96,12 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
             return new ChatAnswerResult(SathiConstants.CHAT_NOT_FOUND_MESSAGE, normalizedMeetingId, List.of());
         }
 
+        for (int index = 0; index < contextDocuments.size(); index++) {
+            Document document = contextDocuments.get(index);
+            log.info("Retrieved Q&A context chunk {}/{} | scope={} | metadata={} | content=\n{}",
+                    index + 1, contextDocuments.size(), scope, document.getMetadata(), document.getText());
+        }
+
         String requiredSubject = plannedQuery.requiredSubject();
         if (requiredSubject != null && contextDocuments.stream()
                 .noneMatch(document -> containsTerm(document.getText(), requiredSubject))) {
@@ -102,12 +117,21 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
                 .map(TranscriptDocumentSupport::toTraceableContext)
                 .collect(Collectors.joining("\n\n"));
 
+        var definitionAnswer = answerDefinitionFromEvidence(normalizedQuestion, contextDocuments);
+        if (definitionAnswer.isPresent()) {
+            log.info("Answered entity definition directly from transcript evidence | scope={} | answer=\n{}",
+                    scope, definitionAnswer.get());
+            return new ChatAnswerResult(definitionAnswer.get(), normalizedMeetingId, sources);
+        }
+
         var deterministicAnswer = EvidenceCalculation.calculateResponseTimeReduction(
                 normalizedQuestion, contextDocuments.stream().map(Document::getText).toList());
         if (deterministicAnswer.isPresent()) {
             log.info("Calculated response-time reduction from retrieved transcript evidence | scope={} | sources={}",
                     normalizedMeetingId == null ? "all_chat_meetings" : normalizedMeetingId,
                     sources.size());
+            log.info("Exact deterministic /ai/qna answer | scope={} | answer=\n{}",
+                    scope, deterministicAnswer.get());
             return new ChatAnswerResult(deterministicAnswer.get(), normalizedMeetingId, sources);
         }
 
@@ -137,7 +161,44 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
                 normalizedMeetingId == null ? "all_chat_meetings" : normalizedMeetingId,
                 sources.size(),
                 (System.nanoTime() - startedAt) / 1_000_000);
+        log.info("Exact generated /ai/qna answer | scope={} | answer=\n{}", scope, answer.trim());
         return new ChatAnswerResult(answer.trim(), normalizedMeetingId, sources);
+    }
+
+    private static java.util.Optional<String> answerDefinitionFromEvidence(
+            String question, List<Document> documents) {
+        var matcher = DEFINITION_QUESTION.matcher(question);
+        if (!matcher.matches()) {
+            return java.util.Optional.empty();
+        }
+
+        String entity = matcher.group(1).replaceAll("[?.!]+$", "").trim();
+        String normalizedEntity = normalizeForMatching(entity);
+        if (normalizedEntity.isBlank()) {
+            return java.util.Optional.empty();
+        }
+
+        for (Document document : documents) {
+            String[] sentences = document.getText().split("(?<=[.!?])\\s+|\\R+");
+            for (int index = 0; index < sentences.length; index++) {
+                String sentence = sentences[index].trim();
+                if (normalizeForMatching(sentence).contains(normalizedEntity)
+                        && DESCRIPTIVE_TERM.matcher(sentence).find()) {
+                    String answer = sentence;
+                    if (index + 1 < sentences.length && !sentences[index + 1].isBlank()) {
+                        answer += " " + sentences[index + 1].trim();
+                    }
+                    return java.util.Optional.of(answer);
+                }
+            }
+        }
+        return java.util.Optional.empty();
+    }
+
+    private static String normalizeForMatching(String value) {
+        return Normalizer.normalize(value, Normalizer.Form.NFD)
+                .replaceAll("\\p{M}+", "")
+                .toLowerCase(java.util.Locale.ROOT);
     }
 
     private List<Document> search(List<String> queries, String meetingId, double threshold) {

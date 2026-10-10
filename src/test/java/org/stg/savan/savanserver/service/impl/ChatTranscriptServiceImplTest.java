@@ -57,6 +57,34 @@ class ChatTranscriptServiceImplTest {
     }
 
     @Test
+    void answersEntityDefinitionDirectlyFromRetrievedTranscriptEvidence() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        ChatClient chatClient = mock(ChatClient.class);
+        Document evidence = Document.builder()
+                .text("The team met to prepare the SĀTHI office knowledge assistant demo. "
+                        + "The goal is to show how employees can search internal knowledge in plain language "
+                        + "and get answers grounded in saved sources.")
+                .metadata(Map.of(
+                        "meeting_id", "sathi-office-demo-20261009",
+                        "chunk_index", 0,
+                        "parent_document_id", "parent-1"))
+                .score(0.57)
+                .build();
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(evidence));
+        ChatTranscriptServiceImpl service = new ChatTranscriptServiceImpl(
+                vectorStore,
+                TokenTextSplitter.builder().withChunkSize(350).build(),
+                chatClient);
+
+        var result = service.answerQuestion("What is SĀTHI?", null);
+
+        assertTrue(result.answer().contains("SĀTHI office knowledge assistant"));
+        assertTrue(result.answer().contains("search internal knowledge in plain language"));
+        assertEquals(1, result.sources().size());
+        verify(chatClient, never()).prompt();
+    }
+
+    @Test
     void doesNotInferImpactForSubjectAbsentFromRetrievedEvidence() {
         VectorStore vectorStore = mock(VectorStore.class);
         ChatClient chatClient = mock(ChatClient.class);

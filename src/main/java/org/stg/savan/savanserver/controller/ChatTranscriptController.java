@@ -38,6 +38,8 @@ public class ChatTranscriptController {
                 .count();
         log.info("Received /ai/transcripts request | requested_meeting_id={} | device={} | segments={} | characters={}",
                 request.meetingId(), request.device(), segmentCount, transcriptText.length());
+        log.info("Full /ai/transcripts content | requested_meeting_id={} | transcript=\n{}",
+                request.meetingId(), transcriptText);
 
         if (transcriptText.isBlank()) {
             log.info("Rejected /ai/transcripts request | reason=empty_text");
@@ -69,6 +71,7 @@ public class ChatTranscriptController {
         String question = request.question();
         log.info("Received /ai/qna request | meeting_id={} | question_characters={}",
                 request.meetingId(), question == null ? 0 : question.length());
+        log.info("Exact /ai/qna question | meeting_id={} | question={}", request.meetingId(), question);
 
         if (question == null || question.isBlank()) {
             log.info("Rejected /ai/qna request | reason=empty_question");
@@ -81,6 +84,7 @@ public class ChatTranscriptController {
                     question.trim(), request.meetingId());
             log.info("Completed /ai/qna request | meeting_id={} | sources={} | answer_characters={} | elapsed_ms={}",
                     result.meetingId(), result.sources().size(), result.answer().length(), elapsedMillis(startedAt));
+            log.info("Exact /ai/qna answer | meeting_id={} | answer=\n{}", result.meetingId(), result.answer());
             return ResponseEntity.ok(result);
         } catch (IllegalArgumentException e) {
             log.info("Rejected /ai/qna request | reason={}", e.getMessage());
