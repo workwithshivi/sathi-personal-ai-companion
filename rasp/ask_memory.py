@@ -18,10 +18,10 @@ QNA_API_URL = os.environ.get(
     "SATHI_QNA_URL",
     "http://10.153.210.18:8080/ai/qna",
 )
-MEETING_ID = os.environ.get(
-    "SATHI_MEETING_ID",
-    datetime.now().strftime("%Y%m%d"),
-)
+# MEETING_ID = os.environ.get(
+#     "SATHI_MEETING_ID",
+#     datetime.now().strftime("%Y%m%d"),
+# )
 REQUEST_TIMEOUT_SECONDS = 120
 BUTTON_PIN = int(os.environ.get("SATHI_BUTTON_GPIO", "22"))
 BUTTON_PULL_UP = os.environ.get("SATHI_BUTTON_PULL_UP", "true").lower() == "true"
@@ -36,8 +36,8 @@ QUESTION_AUDIO_PATH = (
 
 def ask_server(question):
     payload = {"question": question}
-    if MEETING_ID:
-        payload["meeting_id"] = MEETING_ID
+    # if MEETING_ID:
+    #     payload["meeting_id"] = MEETING_ID
 
     response = requests.post(
         QNA_API_URL,
