@@ -46,6 +46,7 @@ def main():
                 )
                 while not button.is_pressed:
                     time.sleep(0.02)
+                led.on()
                 print("Button pressed; starting recording.", flush=True)
             finally:
                 button.close()
