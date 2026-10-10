@@ -3,7 +3,6 @@ import os
 import subprocess
 import time
 import wave
-from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -18,10 +17,6 @@ QNA_API_URL = os.environ.get(
     "SATHI_QNA_URL",
     "http://10.153.210.18:8080/ai/qna",
 )
-# MEETING_ID = os.environ.get(
-#     "SATHI_MEETING_ID",
-#     datetime.now().strftime("%Y%m%d"),
-# )
 REQUEST_TIMEOUT_SECONDS = 120
 BUTTON_PIN = int(os.environ.get("SATHI_BUTTON_GPIO", "22"))
 BUTTON_PULL_UP = os.environ.get("SATHI_BUTTON_PULL_UP", "true").lower() == "true"
@@ -36,8 +31,6 @@ QUESTION_AUDIO_PATH = (
 
 def ask_server(question):
     payload = {"question": question}
-    # if MEETING_ID:
-    #     payload["meeting_id"] = MEETING_ID
 
     response = requests.post(
         QNA_API_URL,
@@ -118,10 +111,6 @@ def record_question_until_button():
 def main():
     print("Sathi voice Q&A. Press the button to stop recording.")
     print(f"API: {QNA_API_URL}")
-    if MEETING_ID:
-        print(f"Meeting scope: {MEETING_ID}")
-    else:
-        print("Meeting scope: all available meetings")
 
     try:
         question = record_question_until_button()
