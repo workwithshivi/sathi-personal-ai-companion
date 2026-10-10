@@ -1,4 +1,5 @@
 
+import json
 import signal
 import re
 import subprocess
@@ -11,6 +12,7 @@ from pathlib import Path
 from gpiozero import LED
 import numpy as np
 import sherpa_onnx
+from vosk import KaldiRecognizer, Model
 
 from database import (
     init_db,
@@ -37,6 +39,7 @@ MODEL_FILES = (
     MODEL_DIR / "decoder.int8.onnx",
     MODEL_DIR / "tokens.txt",
 )
+VOSK_MODEL_DIR = Path(__file__).resolve().parent / "vosk-model-small-en-us-0.15"
 
 WAKE_WORDS = [
     "hey savan",
@@ -45,12 +48,6 @@ WAKE_WORDS = [
     "hey pie",
     "hey pi",
     "hi pi",
-    "हे सावन",
-    "हे सवन",
-    "हे सेवन",
-    "हे पाई",
-    "हे पी",
-    "हाय पी",
 ]
 
 STOP_PHRASES = [
@@ -62,10 +59,6 @@ STOP_PHRASES = [
     "end the meeting",
     "finish the meeting",
     "close the session",
-    "सुनना बंद करो",
-    "मीटिंग खत्म",
-    "बैठक खत्म",
-    "सत्र समाप्त",
 ]
 
 # PipeWire recording format:
@@ -155,6 +148,11 @@ def start_microphone():
 # ============================================================
 # SHERPA-ONNX RECOGNIZER
 # ============================================================
+
+def create_wake_recognizer(model):
+    grammar = json.dumps(WAKE_WORDS + ["[unk]"])
+    return KaldiRecognizer(model, SAMPLE_RATE, grammar)
+
 
 def create_recognizer():
     return sherpa_onnx.OfflineRecognizer.from_whisper(
@@ -309,6 +307,11 @@ def cleanup():
 def main():
     global mic_process
 
+    if not VOSK_MODEL_DIR.is_dir():
+        raise FileNotFoundError(
+            f"Vosk wake-word model directory not found: {VOSK_MODEL_DIR}"
+        )
+
     missing_models = [path for path in MODEL_FILES if not path.is_file()]
     if missing_models:
         raise FileNotFoundError(
@@ -319,12 +322,16 @@ def main():
     print_status("Initializing SQLite database...")
     init_db()
 
+    print_status("Loading Vosk wake-word model...")
+    wake_model = Model(str(VOSK_MODEL_DIR))
+    wake_recognizer = create_wake_recognizer(wake_model)
+
     print_status("Loading Sherpa-ONNX Whisper model...")
     recognizer = create_recognizer()
 
     mic_process = start_microphone()
 
-    print_status("Sherpa-ONNX model loaded.")
+    print_status("Vosk wake-word model and Sherpa-ONNX transcription model loaded.")
     print_status("Bluetooth microphone started.")
     print_status("Waiting for wake word: Hey Pi")
 
@@ -356,6 +363,20 @@ def main():
             time.sleep(0.02)
             continue
 
+        if wake_mode:
+            if wake_recognizer.AcceptWaveform(data):
+                result = json.loads(wake_recognizer.Result())
+                recognized_text = result.get("text", "").strip().lower()
+
+                if recognized_text:
+                    print_status(f"Wake recognition: {recognized_text}")
+                    if contains_phrase(recognized_text, WAKE_WORDS):
+                        begin_session()
+                        wake_recognizer = create_wake_recognizer(wake_model)
+                    else:
+                        print_status("Wake phrase not matched; still waiting.")
+            continue
+
         pcm_samples = np.frombuffer(data, dtype="<i2").astype(np.int32)
         peak = np.max(np.abs(pcm_samples)) / 32768.0
 
@@ -382,13 +403,7 @@ def main():
                 )
 
                 if recognized_text:
-                    if wake_mode:
-                        print_status(f"Wake recognition: {recognized_text}")
-                        if contains_phrase(recognized_text, WAKE_WORDS):
-                            begin_session()
-                        else:
-                            print_status("Wake phrase not matched; still waiting.")
-                    elif command_mode:
+                    if command_mode:
                         if process_transcription(recognized_text):
                             finish_session()
 
