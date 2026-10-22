@@ -12,13 +12,10 @@ public final class SathiConstants {
     public static final String CHAT_NOT_FOUND_MESSAGE =
             "I could not find enough information in the saved transcripts to answer that.";
     public static final String DEFAULT_CHAT_DEVICE = "laptop";
-    public static final String DEFAULT_TRANSCRIPT_DEVICE = "raspberry-pi";
     public static final String MEETING_ID_PREFIX = "meeting-";
     public static final Pattern MEETING_ID_PATTERN = Pattern.compile(
             "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}");
 
-    public static final int TRANSCRIPT_RESULT_COUNT = 3;
-    public static final int UNFILTERED_TRANSCRIPT_SEARCH_COUNT = 12;
     public static final int CHAT_RESULT_COUNT = 5;
     public static final double SIMILARITY_THRESHOLD = 0.55;
     public static final double RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD = 0.45;
