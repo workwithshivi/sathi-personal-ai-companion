@@ -4,37 +4,38 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.stg.savan.savanserver.constants.SathiConstants;
 import org.stg.savan.savanserver.model.ChatAnswerResult;
+import org.stg.savan.savanserver.model.GroundedChatAnswer;
 import org.stg.savan.savanserver.model.MemoryType;
 import org.stg.savan.savanserver.service.ChatTranscriptService;
 import org.stg.savan.savanserver.service.support.TranscriptDocumentSupport;
+import org.stg.savan.savanserver.service.support.QnaEvidenceSupport;
 import org.stg.savan.savanserver.util.MeetingIds;
+import org.stg.savan.savanserver.util.ApiRequestLogSupport;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.text.Normalizer;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
 public class ChatTranscriptServiceImpl implements ChatTranscriptService {
 
     private static final Logger log = LoggerFactory.getLogger(ChatTranscriptServiceImpl.class);
-    private static final Pattern DEFINITION_QUESTION = Pattern.compile(
-            "(?iu)^\\s*(?:what\\s+is|what's|define|explain)\\s+(?:the\\s+)?(.+?)\\s*[?.!]*\\s*$");
-    private static final Pattern DESCRIPTIVE_TERM = Pattern.compile(
-            "(?iu)\\b(?:assistant|application|system|project|tool|platform|service|product|prototype|software)\\b");
-
     private final VectorStore vectorStore;
     private final TokenTextSplitter textSplitter;
     private final ChatClient chatClient;
+
+    @Value("${sathi.logging.include-content:false}")
+    private boolean includeContentInLogs;
 
     public ChatTranscriptServiceImpl(
             VectorStore vectorStore,
@@ -51,6 +52,7 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
         String normalizedDevice = device == null || device.isBlank()
                 ? SathiConstants.DEFAULT_CHAT_DEVICE : device.trim();
         String meetingId = MeetingIds.createOrPreserve(requestedMeetingId);
+        long startedAt = System.nanoTime();
 
         Document source = new Document(normalizedText, Map.of(
                 "received_at", Instant.now().toString(),
@@ -58,15 +60,27 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
                 "memory_type", MemoryType.TRANSCRIPT.getMetadataValue(),
                 "meeting_id", meetingId,
                 "pipeline", SathiConstants.CHAT_PIPELINE));
-        List<Document> chunks = textSplitter.apply(List.of(source));
+        List<Document> chunks = new ArrayList<>(textSplitter.apply(List.of(source)));
         for (int index = 0; index < chunks.size(); index++) {
-            log.info("Transcript storage chunk {}/{} | meeting_id={} | content=\n{}",
-                    index + 1, chunks.size(), meetingId, chunks.get(index).getText());
+            Document chunk = chunks.get(index);
+            Map<String, Object> metadata = new HashMap<>(chunk.getMetadata());
+            metadata.put("meeting_id", meetingId);
+            metadata.put("pipeline", SathiConstants.CHAT_PIPELINE);
+            chunk = Document.builder()
+                    .id(QnaEvidenceSupport.stableChunkId(meetingId, index, chunk.getText()))
+                    .text(chunk.getText())
+                    .metadata(metadata)
+                    .build();
+            chunks.set(index, chunk);
+            ApiRequestLogSupport.infoWhen(log, includeContentInLogs,
+                    "Transcript storage chunk {}/{} | meeting_id={} | content=\n{}",
+                    index + 1, chunks.size(), meetingId, chunk.getText());
         }
 
         vectorStore.add(chunks);
-        log.info("Stored ChatClient transcript | meeting_id={} | chunks={} | device={}",
-                meetingId, chunks.size(), normalizedDevice);
+        ApiRequestLogSupport.info(log,
+                "Stored ChatClient transcript | meeting_id={} | chunks={} | device={} | elapsed_ms={}",
+                meetingId, chunks.size(), normalizedDevice, ApiRequestLogSupport.elapsedMillis(startedAt));
         return meetingId;
     }
 
@@ -77,35 +91,81 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
         QueryIntentRouter.PlannedQuery plannedQuery = QueryIntentRouter.plan(normalizedQuestion);
         String scope = normalizedMeetingId == null ? "all_chat_meetings" : normalizedMeetingId;
 
-        log.info("ChatClient retrieval started | intent={} | scope={} | threshold={} | query_variants={}",
+        ApiRequestLogSupport.info(log,
+                "ChatClient retrieval started | intent={} | scope={} | threshold={} | query_variants={}",
                 plannedQuery.intent(), scope, SathiConstants.SIMILARITY_THRESHOLD,
                 plannedQuery.searchQueries().size());
+        for (int index = 0; index < plannedQuery.searchQueries().size(); index++) {
+            String searchQuery = plannedQuery.searchQueries().get(index);
+            if (includeContentInLogs) {
+                ApiRequestLogSupport.debug(log, "Q&A planned query | intent={} | variant={}/{} | query={}",
+                        plannedQuery.intent(), index + 1, plannedQuery.searchQueries().size(), searchQuery);
+            } else {
+                ApiRequestLogSupport.debug(log,
+                        "Q&A planned query | intent={} | variant={}/{} | query_characters={}",
+                        plannedQuery.intent(), index + 1, plannedQuery.searchQueries().size(), searchQuery.length());
+            }
+        }
+        long retrievalStartedAt = System.nanoTime();
         List<Document> retrieved = search(plannedQuery.searchQueries(), normalizedMeetingId,
                 SathiConstants.SIMILARITY_THRESHOLD);
-        if (retrieved.isEmpty()) {
-            log.info("No matches at primary threshold; retrying retrieval | scope={} | threshold={}",
-                    scope, SathiConstants.RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD);
-            retrieved = search(plannedQuery.searchQueries(), normalizedMeetingId,
+        int primaryCount = TranscriptDocumentSupport.deduplicateAndLimit(
+                retrieved, SathiConstants.CHAT_RESULT_COUNT).size();
+        ApiRequestLogSupport.debug(log,
+                "Primary retrieval summary | scope={} | raw_hits={} | distinct_chunks={} | threshold={}",
+                scope, retrieved.size(), primaryCount, SathiConstants.SIMILARITY_THRESHOLD);
+        if (primaryCount < SathiConstants.CHAT_MIN_PRIMARY_RESULTS) {
+            ApiRequestLogSupport.info(log,
+                    "Primary retrieval returned limited evidence; retrying and merging fallback results | scope={} | primary_chunks={} | threshold={}",
+                    scope, primaryCount, SathiConstants.RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD);
+            List<Document> fallback = search(plannedQuery.searchQueries(), normalizedMeetingId,
                     SathiConstants.RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD);
+            retrieved.addAll(fallback);
+            ApiRequestLogSupport.debug(log,
+                    "Merged retrieval summary | scope={} | primary_hits={} | fallback_hits={} | merged_distinct_chunks={}",
+                    scope, retrieved.size() - fallback.size(), fallback.size(),
+                    TranscriptDocumentSupport.deduplicateAndLimit(retrieved, SathiConstants.CHAT_RESULT_COUNT).size());
+            ApiRequestLogSupport.info(log,
+                    "Fallback retrieval completed | scope={} | fallback_hits={} | elapsed_ms={}",
+                    scope, fallback.size(), ApiRequestLogSupport.elapsedMillis(retrievalStartedAt));
+        } else {
+            ApiRequestLogSupport.info(log,
+                    "Primary retrieval completed | scope={} | distinct_chunks={} | elapsed_ms={}",
+                    scope, primaryCount, ApiRequestLogSupport.elapsedMillis(retrievalStartedAt));
         }
 
         List<Document> contextDocuments = TranscriptDocumentSupport.deduplicateAndLimit(
                 retrieved, SathiConstants.CHAT_RESULT_COUNT);
+        if (normalizedMeetingId == null) {
+            List<Document> beforeRelevanceFilter = contextDocuments;
+            contextDocuments = TranscriptDocumentSupport.keepNearBestScore(
+                    contextDocuments, SathiConstants.UNSCOPED_RELEVANCE_SCORE_MARGIN);
+            ApiRequestLogSupport.debug(log,
+                    "Applied unscoped evidence relevance filter | before={} | after={} | score_gap={}",
+                    beforeRelevanceFilter.size(), contextDocuments.size(),
+                    SathiConstants.UNSCOPED_RELEVANCE_SCORE_MARGIN);
+        }
         if (contextDocuments.isEmpty()) {
-            log.info("No ChatClient transcript context found after fallback | scope={}", scope);
+            ApiRequestLogSupport.info(log, "No ChatClient transcript context found after fallback | scope={}", scope);
             return new ChatAnswerResult(SathiConstants.CHAT_NOT_FOUND_MESSAGE, normalizedMeetingId, List.of());
         }
 
         for (int index = 0; index < contextDocuments.size(); index++) {
             Document document = contextDocuments.get(index);
-            log.info("Retrieved Q&A context chunk {}/{} | scope={} | metadata={} | content=\n{}",
+            ApiRequestLogSupport.debug(log,
+                    "Q&A evidence selected | rank={}/{} | scope={} | metadata={} | score={} | characters={}",
+                    index + 1, contextDocuments.size(), scope, document.getMetadata(), document.getScore(),
+                    document.getText().length());
+            ApiRequestLogSupport.debugWhen(log, includeContentInLogs,
+                    "Q&A evidence content | rank={}/{} | scope={} | metadata={} | content=\n{}",
                     index + 1, contextDocuments.size(), scope, document.getMetadata(), document.getText());
         }
 
         String requiredSubject = plannedQuery.requiredSubject();
         if (requiredSubject != null && contextDocuments.stream()
-                .noneMatch(document -> containsTerm(document.getText(), requiredSubject))) {
-            log.info("Retrieved incident evidence does not mention the requested impact subject | scope={} | subject={}",
+                .noneMatch(document -> QnaEvidenceSupport.containsTerm(document.getText(), requiredSubject))) {
+            ApiRequestLogSupport.info(log,
+                    "Retrieved evidence does not mention the requested relation subject | scope={} | subject={}",
                     scope, requiredSubject);
             return new ChatAnswerResult(SathiConstants.CHAT_NOT_FOUND_MESSAGE, normalizedMeetingId, List.of());
         }
@@ -117,29 +177,32 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
                 .map(TranscriptDocumentSupport::toTraceableContext)
                 .collect(Collectors.joining("\n\n"));
 
-        var definitionAnswer = answerDefinitionFromEvidence(normalizedQuestion, contextDocuments);
+        var definitionAnswer = QnaEvidenceSupport.answerDefinitionFromEvidence(normalizedQuestion, contextDocuments);
         if (definitionAnswer.isPresent()) {
-            log.info("Answered entity definition directly from transcript evidence | scope={} | answer=\n{}",
-                    scope, definitionAnswer.get());
+            ApiRequestLogSupport.info(log,
+                    "Answered entity definition directly from transcript evidence | scope={} | answer_characters={}",
+                    scope, definitionAnswer.get().length());
+            ApiRequestLogSupport.infoWhen(log, includeContentInLogs,
+                    "Exact deterministic /ai/qna answer | scope={} | answer=\n{}", scope, definitionAnswer.get());
             return new ChatAnswerResult(definitionAnswer.get(), normalizedMeetingId, sources);
         }
 
-        var deterministicAnswer = EvidenceCalculation.calculateResponseTimeReduction(
+        var deterministicAnswer = EvidenceCalculation.calculatePercentageChange(
                 normalizedQuestion, contextDocuments.stream().map(Document::getText).toList());
         if (deterministicAnswer.isPresent()) {
-            log.info("Calculated response-time reduction from retrieved transcript evidence | scope={} | sources={}",
-                    normalizedMeetingId == null ? "all_chat_meetings" : normalizedMeetingId,
-                    sources.size());
-            log.info("Exact deterministic /ai/qna answer | scope={} | answer=\n{}",
-                    scope, deterministicAnswer.get());
+            ApiRequestLogSupport.info(log,
+                    "Calculated percentage change from retrieved transcript evidence | scope={} | sources={}",
+                    scope, sources.size());
+            ApiRequestLogSupport.infoWhen(log, includeContentInLogs,
+                    "Exact deterministic /ai/qna answer | scope={} | answer=\n{}", scope, deterministicAnswer.get());
             return new ChatAnswerResult(deterministicAnswer.get(), normalizedMeetingId, sources);
         }
 
-        log.info("Retrieved {} unique ChatClient evidence chunks | scope={} | best_score={}",
+        ApiRequestLogSupport.info(log, "Retrieved {} unique ChatClient evidence chunks | scope={} | best_score={}",
                 sources.size(), scope, sources.getFirst().score());
 
         long startedAt = System.nanoTime();
-        String answer = chatClient.prompt()
+        GroundedChatAnswer generated = chatClient.prompt()
                 .system(SathiConstants.CHAT_SYSTEM_PROMPT)
                 .user(user -> user.text("""
                         Question:
@@ -151,85 +214,76 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
                         .param("question", normalizedQuestion)
                         .param("context", context))
                 .call()
-                .content();
+                .entity(GroundedChatAnswer.class, spec -> spec.useProviderStructuredOutput());
 
-        if (answer == null || answer.isBlank()) {
-            throw new IllegalStateException("Chat model returned an empty answer");
+        if (generated == null || generated.answer() == null || generated.answer().isBlank()) {
+            throw new IllegalStateException("Chat model returned an empty structured answer");
         }
+        QnaEvidenceSupport.EvidenceQuoteCheck quoteCheck =
+                QnaEvidenceSupport.checkEvidenceQuotes(generated.evidenceQuotes(), contextDocuments);
+        ApiRequestLogSupport.debug(log,
+                "Structured Q&A response validated | scope={} | model_supported={} | valid_quotes={}/{} | answer_characters={}",
+                scope, generated.supportedByEvidence(), quoteCheck.validCount(), quoteCheck.totalCount(),
+                generated.answer().length());
+        if (!generated.supportedByEvidence() || !quoteCheck.valid()) {
+            ApiRequestLogSupport.info(log,
+                    "Rejected generated answer | scope={} | model_supported={} | valid_quotes={}/{} | rejection_reason={}",
+                    scope, generated.supportedByEvidence(), quoteCheck.validCount(), quoteCheck.totalCount(),
+                    !generated.supportedByEvidence() ? "model_marked_unsupported" : "quote_not_found_in_sources");
+            ApiRequestLogSupport.debugWhen(log, includeContentInLogs,
+                    "Rejected generated answer content | scope={} | answer={} | evidence_quotes={}",
+                    scope, generated.answer(), generated.evidenceQuotes());
+            return new ChatAnswerResult(SathiConstants.CHAT_NOT_FOUND_MESSAGE, normalizedMeetingId, List.of());
+        }
+        String answer = generated.answer().trim();
 
-        log.info("Generated ChatClient answer | scope={} | evidence_chunks={} | elapsed_ms={}",
-                normalizedMeetingId == null ? "all_chat_meetings" : normalizedMeetingId,
-                sources.size(),
-                (System.nanoTime() - startedAt) / 1_000_000);
-        log.info("Exact generated /ai/qna answer | scope={} | answer=\n{}", scope, answer.trim());
+        ApiRequestLogSupport.info(log,
+                "Generated ChatClient answer | scope={} | evidence_chunks={} | elapsed_ms={}",
+                scope, sources.size(), ApiRequestLogSupport.elapsedMillis(startedAt));
+        ApiRequestLogSupport.debugWhen(log, includeContentInLogs,
+                "Exact generated /ai/qna answer | scope={} | answer=\n{}", scope, answer);
         return new ChatAnswerResult(answer.trim(), normalizedMeetingId, sources);
-    }
-
-    private static java.util.Optional<String> answerDefinitionFromEvidence(
-            String question, List<Document> documents) {
-        var matcher = DEFINITION_QUESTION.matcher(question);
-        if (!matcher.matches()) {
-            return java.util.Optional.empty();
-        }
-
-        String entity = matcher.group(1).replaceAll("[?.!]+$", "").trim();
-        String normalizedEntity = normalizeForMatching(entity);
-        if (normalizedEntity.isBlank()) {
-            return java.util.Optional.empty();
-        }
-
-        for (Document document : documents) {
-            String[] sentences = document.getText().split("(?<=[.!?])\\s+|\\R+");
-            for (int index = 0; index < sentences.length; index++) {
-                String sentence = sentences[index].trim();
-                if (normalizeForMatching(sentence).contains(normalizedEntity)
-                        && DESCRIPTIVE_TERM.matcher(sentence).find()) {
-                    String answer = sentence;
-                    if (index + 1 < sentences.length && !sentences[index + 1].isBlank()) {
-                        answer += " " + sentences[index + 1].trim();
-                    }
-                    return java.util.Optional.of(answer);
-                }
-            }
-        }
-        return java.util.Optional.empty();
-    }
-
-    private static String normalizeForMatching(String value) {
-        return Normalizer.normalize(value, Normalizer.Form.NFD)
-                .replaceAll("\\p{M}+", "")
-                .toLowerCase(java.util.Locale.ROOT)
-                .replaceAll("([aeiou])\\1+", "$1");
     }
 
     private List<Document> search(List<String> queries, String meetingId, double threshold) {
         List<Document> matches = new ArrayList<>();
+        int queryIndex = 0;
         for (String query : queries) {
+            queryIndex++;
+            long searchStartedAt = System.nanoTime();
+            String scope = meetingId == null ? "all_chat_meetings" : meetingId;
+            ApiRequestLogSupport.debugWhen(log, includeContentInLogs,
+                    "Vector search query | scope={} | threshold={} | variant={}/{} | query={}",
+                    scope, threshold, queryIndex, queries.size(), query);
             SearchRequest request = SearchRequest.builder()
                     .query(query)
                     .topK(SathiConstants.CHAT_RESULT_COUNT)
                     .similarityThreshold(threshold)
-                    .filterExpression(meetingIdFilter(meetingId))
+                    .filterExpression(QnaEvidenceSupport.meetingIdFilter(meetingId))
                     .build();
             List<Document> results = vectorStore.similaritySearch(request);
             if (results != null) {
                 matches.addAll(results);
             }
+            Double bestScore = results == null ? null : results.stream()
+                    .map(Document::getScore)
+                    .filter(java.util.Objects::nonNull)
+                    .max(Double::compareTo)
+                    .orElse(null);
+            ApiRequestLogSupport.debug(log,
+                    "Vector search completed | scope={} | threshold={} | variant={}/{} | hits={} | best_score={} | elapsed_ms={}",
+                    scope, threshold, queryIndex, queries.size(), results == null ? 0 : results.size(), bestScore,
+                    ApiRequestLogSupport.elapsedMillis(searchStartedAt));
+            if (results != null) {
+                for (int index = 0; index < results.size(); index++) {
+                    ApiRequestLogSupport.debugWhen(log, includeContentInLogs,
+                            "Vector search hit | scope={} | threshold={} | variant={}/{} | rank={} | score={} | metadata={} | content=\n{}",
+                            scope, threshold, queryIndex, queries.size(), index + 1, results.get(index).getScore(),
+                            results.get(index).getMetadata(), results.get(index).getText());
+                }
+            }
         }
         return matches;
-    }
-
-    private static String meetingIdFilter(String meetingId) {
-        String pipelineFilter = "pipeline == '" + SathiConstants.CHAT_PIPELINE + "'";
-        return meetingId == null
-                ? pipelineFilter
-                : pipelineFilter + " && meeting_id == '" + meetingId + "'";
-    }
-
-    private static boolean containsTerm(String text, String term) {
-        return Pattern.compile("(?iu)\\b" + Pattern.quote(term) + "\\b")
-                .matcher(text == null ? "" : text)
-                .find();
     }
 
 }

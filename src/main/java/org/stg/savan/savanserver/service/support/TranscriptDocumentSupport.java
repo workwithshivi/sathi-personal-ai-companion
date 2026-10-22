@@ -33,6 +33,25 @@ public final class TranscriptDocumentSupport {
                 .toList();
     }
 
+    /** Drops weak, unscoped matches that sit far below the best retrieved transcript chunk. */
+    public static List<Document> keepNearBestScore(List<Document> documents, double maximumScoreGap) {
+        if (documents == null || documents.isEmpty()) {
+            return List.of();
+        }
+        Double bestScore = documents.stream()
+                .map(Document::getScore)
+                .filter(java.util.Objects::nonNull)
+                .max(Double::compareTo)
+                .orElse(null);
+        if (bestScore == null) {
+            return documents;
+        }
+        double minimumScore = bestScore - maximumScoreGap;
+        return documents.stream()
+                .filter(document -> document.getScore() != null && document.getScore() >= minimumScore)
+                .toList();
+    }
+
     public static RetrievalSource toSource(Document document) {
         Map<String, Object> metadata = document.getMetadata();
         return new RetrievalSource(

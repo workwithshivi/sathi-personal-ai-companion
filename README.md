@@ -1,6 +1,6 @@
 # SĀTHI Transcript Memory Server
 
-Spring Boot application for storing meeting transcripts as vector-searchable chunks and answering questions from the saved evidence. The demo uses the laptop-side Spring AI `ChatClient` flow.
+Spring Boot application for storing transcripts as vector-searchable chunks and answering questions about any subject covered by the saved evidence. The demo uses the laptop-side Spring AI `ChatClient` flow.
 
 ## Architecture
 
@@ -98,7 +98,44 @@ Content-Type: `application/json`
 }
 ```
 
-The model is instructed to answer from retrieved evidence and avoid inventing missing details. Response-time reductions are calculated from retrieved baseline and percentage values when possible. If no relevant chunks pass the retrieval thresholds, the service returns a not-found answer.
+The model is instructed to answer from retrieved evidence and avoid inventing missing details. Percentage changes are calculated from matching baseline and change values when both are present in the same evidence chunk. If no relevant chunks pass the retrieval thresholds, the service returns a not-found answer.
+
+## Q&A reliability
+
+- The primary similarity threshold remains `0.55`; the lower fallback remains `0.45`.
+- If primary retrieval yields fewer than two distinct chunks, the service retries at `0.45` and merges both result sets before deduplication. This preserves strong primary matches while allowing a weaker complementary chunk to supply missing facts.
+- ChatClient generation now uses a typed structured response. It must include one or more exact transcript quotes; the service checks that every quote is present in the retrieved chunks and abstains if the model marks its answer unsupported or returns an invalid quote. This is a source-presence check, not a complete semantic entailment proof, so the regression set and demo questions still need to be evaluated against the real model.
+- Retrieval recognizes broad question shapes such as definitions, actions, decisions, plans, and subject-specific relationships. These routes do not assume a particular business domain, product, incident type, or subject vocabulary.
+- Repeated uploads of the same transcript to the same meeting receive deterministic chunk IDs. pgvector upserts by ID, so a network retry does not create another copy of those chunks. Uploading changed text still creates new chunk IDs; the service does not delete older meeting content.
+- The generation temperature is `0.1` for more repeatable answers. The similarity thresholds and 350-token chunking are unchanged.
+- INFO logs include request sizes, retrieval counts/scores, source metadata, stage timings, and errors. Transcript text, complete retrieved chunks, and exact question/answer content are off by default. Set `SATHI_LOG_CONTENT=true` when running locally with non-sensitive sample data to enable those detailed logs.
+- The controller and Q&A service emit focused DEBUG logs for query planning, per-variant vector search counts/scores/latency, evidence selection, model support flags, quote validation, and source metadata. Exact query variants, transcript chunks, and generated answers remain gated by `SATHI_LOG_CONTENT=true`.
+- Spring AI and application metrics are available at `GET /actuator/metrics`; liveness/readiness and general health are available at `GET /actuator/health`.
+
+Spring AI's Ollama integration supports provider structured output, but schema behavior can vary by Ollama and model version. Confirm the configured `gemma:2b` Ollama version with the live service before the demo. See [Spring AI structured output](https://docs.spring.io/spring-ai/reference/api/structured-output.html) and [Ollama chat structured output](https://docs.spring.io/spring-ai/reference/api/chat/ollama-chat.html).
+
+### Manual evaluation set
+
+Run these against one known meeting first, then repeat without `meeting_id` to test all-meeting retrieval. For answerable questions, verify both the answer and at least one relevant source. For unanswerable questions, verify the service abstains instead of guessing.
+
+| Case | Question | Expected behavior |
+| --- | --- | --- |
+| Direct fact | What quantity did the transcript record? | Return the recorded value and a source. |
+| Paraphrase | Ask for that same fact using different wording. | Return the same fact despite the paraphrase. |
+| Calculation | What is the resulting inventory level after the planned percentage increase? | Calculate only from matching baseline and percentage values in the same evidence chunk. |
+| Action intent | What should we do next? | Retrieve assigned actions or next steps, with sources. |
+| Decision intent | Which option did the group select? | Return the documented choice, with sources. |
+| Subject-specific relationship | Did the supplier delay affect shipping? | Preserve explicit evidence; do not infer from silence. |
+| Unsupported subject | Did the supplier delay affect gardening? | Abstain unless the transcript addresses that subject. |
+| Missing detail | What value was recorded for an absent measurement? | Abstain if the transcript does not provide it. |
+| Meeting isolation | Ask a fact from meeting A while requesting meeting B's ID. | Do not return meeting A's evidence. |
+| Duplicate ingestion | Submit the identical transcript body twice with the same meeting ID. | Q&A should not show duplicated evidence chunks. |
+
+Record for each run: question, expected answer facts, actual answer, source IDs, best similarity score, retrieval latency, generation latency, and whether abstention was correct. This makes retrieval failures distinguishable from answer-generation failures.
+
+### pgvector tuning
+
+The application keeps HNSW and cosine distance as configured. Before changing index settings, benchmark a representative question set against the same stored vectors and database. Compare answer-relevant recall, latency, and query plans; HNSW is approximate, and metadata filters can affect how many matching rows are examined. Record the pgvector extension version before testing iterative scans, since available HNSW options depend on that version. See the [pgvector index and filtering guidance](https://github.com/pgvector/pgvector/blob/master/README.md) and [Spring AI vector-store search options](https://docs.spring.io/spring-ai/reference/api/vectordbs.html).
 
 ## Postman smoke test
 
@@ -109,7 +146,7 @@ The model is instructed to answer from retrieved evidence and avoid inventing mi
 
 ## Console logs
 
-At INFO, the application logs request details, full transcript text, stored chunks, exact questions and answers, retrieved evidence chunks, and timings. These logs may contain sensitive meeting content; use sample data during the demo and protect the console output.
+At INFO, the application logs request sizes, counts, source metadata, retrieval scores, stage timings, and errors. Detailed content logging can expose sensitive meeting data and is disabled by default. Enable it only for local debugging with sample transcripts using `SATHI_LOG_CONTENT=true`.
 
 ## Tests
 
