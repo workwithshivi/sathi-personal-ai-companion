@@ -28,8 +28,7 @@ class ChatTranscriptServiceImplTest {
     @Test
     void retriesExpandedIncidentImpactQueriesAtFallbackThresholdWithinMeetingScope() {
         VectorStore vectorStore = mock(VectorStore.class);
-        ChatClient chatClient = mockChatClient("No, the staging incident did not affect production.",
-                "The incident did not affect production!", true);
+        ChatClient chatClient = mock(ChatClient.class);
         Document evidence = Document.builder()
                 .text("The incident did not affect production.")
                 .metadata(Map.of(
@@ -54,10 +53,11 @@ class ChatTranscriptServiceImplTest {
         var result = service.answerQuestion(
                 "Did the outage affect production?", "sathi-office-demo-20261009");
 
-        assertEquals("No, the staging incident did not affect production.", result.answer());
+        assertEquals("No. The incident did not affect production.", result.answer());
         assertEquals(1, result.sources().size());
         assertEquals("sathi-office-demo-20261009", result.sources().getFirst().meetingId());
         assertTrue(result.sources().getFirst().score() >= 0.45);
+        verify(chatClient, never()).prompt();
     }
 
     @Test
@@ -81,14 +81,14 @@ class ChatTranscriptServiceImplTest {
 
         var result = service.answerQuestion("What approach did the team choose?", null);
 
-        assertEquals(2, result.sources().size());
+        assertEquals(1, result.sources().size());
         assertEquals("The team chose to keep both flows available.", result.answer());
     }
 
     @Test
     void unscopedQuestionsDropWeakMatchesAndReturnACompleteActionAnswer() {
         VectorStore vectorStore = mock(VectorStore.class);
-        ChatClient chatClient = mockChatClient("Daniel will inspect the mail queue.",
+        ChatClient chatClient = mockChatClient("Daniel",
                 "Daniel will inspect the mail queue.", true);
         Document relevant = evidence("Daniel will inspect the mail queue.", 0, 0.64);
         Document weakMatchOne = evidence("Maya will ask the vendor for a replacement quote.", 1, 0.468);
@@ -105,6 +105,199 @@ class ChatTranscriptServiceImplTest {
         assertEquals("Daniel will inspect the mail queue.", result.answer());
         assertEquals(1, result.sources().size());
         assertEquals("Daniel will inspect the mail queue.", relevant.getText());
+    }
+
+    @Test
+    void retriesVerySparseSearchAtLastResortThreshold() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        ChatClient chatClient = mockChatClient("No customer data was lost.",
+                "The team confirmed that no customer data was lost.", true);
+        Document evidence = evidence("The team confirmed that no customer data was lost.", 0, 0.39);
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenAnswer(invocation -> {
+            SearchRequest request = invocation.getArgument(0);
+            return request.getSimilarityThreshold() <= 0.20 ? List.of(evidence) : List.of();
+        });
+        ChatTranscriptServiceImpl service = new ChatTranscriptServiceImpl(
+                vectorStore,
+                TokenTextSplitter.builder().withChunkSize(350).build(),
+                chatClient);
+
+        var result = service.answerQuestion("Was any customer data lost?", null);
+
+        assertEquals("No. The team confirmed that no customer data was lost.", result.answer());
+        assertEquals(1, result.sources().size());
+        verify(chatClient, never()).prompt();
+        var requests = org.mockito.ArgumentCaptor.forClass(SearchRequest.class);
+        verify(vectorStore, org.mockito.Mockito.atLeastOnce()).similaritySearch(requests.capture());
+        assertTrue(requests.getAllValues().stream()
+                .anyMatch(request -> request.getSimilarityThreshold() == 0.20));
+    }
+
+    @Test
+    void answersParaphrasedIssueQuestionFromExplicitIssueSentence() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        ChatClient chatClient = mock(ChatClient.class);
+        Document evidence = evidence("The west meeting room projector is flickering.", 0, 0.68);
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(evidence));
+        ChatTranscriptServiceImpl service = new ChatTranscriptServiceImpl(
+                vectorStore,
+                TokenTextSplitter.builder().withChunkSize(350).build(),
+                chatClient);
+
+        var result = service.answerQuestion(
+                "What is currently wrong with the west meeting room equipment?", "meeting-reliability-test");
+
+        assertEquals("The west meeting room projector is flickering.", result.answer());
+        assertEquals(1, result.sources().size());
+        verify(chatClient, never()).prompt();
+    }
+
+    @Test
+    void answersParaphrasedDecisionYesNoQuestionFromExplicitNegation() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        ChatClient chatClient = mock(ChatClient.class);
+        Document evidence = evidence(
+                "The release date was not changed; the team kept October 30.", 0, 0.68);
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(evidence));
+        ChatTranscriptServiceImpl service = new ChatTranscriptServiceImpl(
+                vectorStore,
+                TokenTextSplitter.builder().withChunkSize(350).build(),
+                chatClient);
+
+        var result = service.answerQuestion(
+                "Did the team change the release date?", "meeting-reliability-test");
+
+        assertEquals("No. The release date was not changed", result.answer());
+        assertEquals(1, result.sources().size());
+        verify(chatClient, never()).prompt();
+    }
+
+    @Test
+    void answersParaphrasedActionQuestionWithTheExactAssignedSentence() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        ChatClient chatClient = mock(ChatClient.class);
+        Document evidence = evidence("Priya will benchmark the revised workflow on Friday.", 0, 0.68);
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(evidence));
+        ChatTranscriptServiceImpl service = new ChatTranscriptServiceImpl(
+                vectorStore,
+                TokenTextSplitter.builder().withChunkSize(350).build(),
+                chatClient);
+
+        var result = service.answerQuestion("What can Priya do next?", "meeting-reliability-test");
+
+        assertEquals("Priya will benchmark the revised workflow on Friday.", result.answer());
+        assertEquals(1, result.sources().size());
+        verify(chatClient, never()).prompt();
+    }
+
+    @Test
+    void doesNotAnswerAnActionQuestionWithAConflictingDate() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        ChatClient chatClient = mock(ChatClient.class);
+        Document evidence = evidence("Priya will benchmark the revised workflow on Friday.", 0, 0.68);
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(evidence));
+        ChatTranscriptServiceImpl service = new ChatTranscriptServiceImpl(
+                vectorStore,
+                TokenTextSplitter.builder().withChunkSize(350).build(),
+                chatClient);
+
+        var result = service.answerQuestion(
+                "Who will benchmark the workflow on Monday?", "meeting-reliability-test");
+
+        assertEquals("I could not find enough information in the saved transcripts to answer that.", result.answer());
+        assertTrue(result.sources().isEmpty());
+        verify(chatClient, never()).prompt();
+    }
+
+    @Test
+    void answersDecisionQuestionFromMatchingTranscriptSentence() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        ChatClient chatClient = mock(ChatClient.class);
+        Document evidence = evidence("The team decided to keep document processing on the laptop.", 0, 0.68);
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(evidence));
+        ChatTranscriptServiceImpl service = new ChatTranscriptServiceImpl(
+                vectorStore,
+                TokenTextSplitter.builder().withChunkSize(350).build(),
+                chatClient);
+
+        var result = service.answerQuestion(
+                "What did the team decide about document processing?", "meeting-reliability-test");
+
+        assertEquals("The team decided to keep document processing on the laptop.", result.answer());
+        assertEquals(1, result.sources().size());
+        verify(chatClient, never()).prompt();
+    }
+
+    @Test
+    void abstainsOnYesNoQuestionWhenNoSingleSentenceMentionsTheRequestedSubject() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        ChatClient chatClient = mock(ChatClient.class);
+        Document evidence = evidence("The team selected the laptop for document processing.", 0, 0.68);
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(evidence));
+        ChatTranscriptServiceImpl service = new ChatTranscriptServiceImpl(
+                vectorStore,
+                TokenTextSplitter.builder().withChunkSize(350).build(),
+                chatClient);
+
+        var result = service.answerQuestion("Was a catering vendor selected?", "meeting-reliability-test");
+
+        assertEquals("I could not find enough information in the saved transcripts to answer that.", result.answer());
+        assertTrue(result.sources().isEmpty());
+        verify(chatClient, never()).prompt();
+    }
+
+    @Test
+    void rejectsGeneratedAnswerWhenItsQuoteDoesNotAddressTheQuestion() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        ChatClient chatClient = mockChatClient("A catering vendor was selected.",
+                "The team selected the laptop for document processing.", true);
+        Document evidence = evidence("The team selected the laptop for document processing.", 0, 0.61);
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(evidence));
+        ChatTranscriptServiceImpl service = new ChatTranscriptServiceImpl(
+                vectorStore,
+                TokenTextSplitter.builder().withChunkSize(350).build(),
+                chatClient);
+
+        var result = service.answerQuestion("What happened to the catering vendor?", null);
+
+        assertEquals("I could not find enough information in the saved transcripts to answer that.", result.answer());
+        assertTrue(result.sources().isEmpty());
+    }
+
+    @Test
+    void acceptsGeneratedAnswerWhenItsVerifiedQuoteMatchesTheQuestion() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        String quote = "The team chose to keep both flows available.";
+        ChatClient chatClient = mockChatClient(quote, quote, true);
+        Document evidence = evidence(quote, 0, 0.61);
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(evidence));
+        ChatTranscriptServiceImpl service = new ChatTranscriptServiceImpl(
+                vectorStore,
+                TokenTextSplitter.builder().withChunkSize(350).build(),
+                chatClient);
+
+        var result = service.answerQuestion("What happened with both flows?", null);
+
+        assertEquals(quote, result.answer());
+        assertEquals(1, result.sources().size());
+    }
+
+    @Test
+    void rejectsGeneratedQuoteWhenItOmitsTheRequestedDay() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        String quote = "Morgan will benchmark the workflow on Friday.";
+        ChatClient chatClient = mockChatClient(quote, quote, true);
+        Document evidence = evidence(quote, 0, 0.61);
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(evidence));
+        ChatTranscriptServiceImpl service = new ChatTranscriptServiceImpl(
+                vectorStore,
+                TokenTextSplitter.builder().withChunkSize(350).build(),
+                chatClient);
+
+        var result = service.answerQuestion("What happened on Monday?", null);
+
+        assertEquals("I could not find enough information in the saved transcripts to answer that.", result.answer());
+        assertTrue(result.sources().isEmpty());
     }
 
     @Test

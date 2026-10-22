@@ -39,11 +39,16 @@ final class EvidenceCalculation {
     }
 
     static Optional<String> calculatePercentageChange(String question, List<String> evidenceChunks) {
+        return calculatePercentageChangeWithEvidence(question, evidenceChunks).map(CalculationResult::answer);
+    }
+
+    static Optional<CalculationResult> calculatePercentageChangeWithEvidence(
+            String question, List<String> evidenceChunks) {
         if (question == null || evidenceChunks == null || !RESULT_QUESTION.matcher(question).find()) {
             return Optional.empty();
         }
         for (String evidence : evidenceChunks) {
-            Optional<String> result = calculateFromOneChunk(evidence);
+            Optional<CalculationResult> result = calculateFromOneChunk(evidence);
             if (result.isPresent()) {
                 return result;
             }
@@ -51,7 +56,7 @@ final class EvidenceCalculation {
         return Optional.empty();
     }
 
-    private static Optional<String> calculateFromOneChunk(String evidence) {
+    private static Optional<CalculationResult> calculateFromOneChunk(String evidence) {
         if (evidence == null) {
             return Optional.empty();
         }
@@ -112,9 +117,10 @@ final class EvidenceCalculation {
         String percentageValue = format(percentage);
         String unit = baseline.group("unit");
         String unitText = unit == null ? "" : " " + unit;
-        return Optional.of(percentageValue + "% " + operation + " from " + valueText + unitText
+        String answer = percentageValue + "% " + operation + " from " + valueText + unitText
                 + " gives " + format(result) + unitText + " (" + valueText + " × (1 "
-                + (increase ? "+" : "-") + " " + percentageValue + "/100)).");
+                + (increase ? "+" : "-") + " " + percentageValue + "/100)).";
+        return Optional.of(new CalculationResult(answer, evidence));
     }
 
     private static boolean sameMetric(String baselineMetric, String changeMetric) {
@@ -137,5 +143,8 @@ final class EvidenceCalculation {
 
     private static String format(BigDecimal value) {
         return value.stripTrailingZeros().toPlainString();
+    }
+
+    record CalculationResult(String answer, String evidence) {
     }
 }

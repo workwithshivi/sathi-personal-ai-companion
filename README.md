@@ -14,6 +14,10 @@ Question → POST /ai/qna → scoped vector retrieval → Ollama ChatClient → 
 
 `meeting_id` metadata scopes retrieval to a meeting. If omitted in a Q&A request, retrieval searches all transcripts uploaded through `/ai/transcripts`.
 
+## Round-two demo
+
+For the offline demo sequence, prepared Postman requests, preflight checklist, architecture explanation, and a concise presentation script, see [ROUND_TWO_DEMO.md](ROUND_TWO_DEMO.md). It describes the current laptop-side implementation and separates live, implemented behavior from future enhancements.
+
 ## Requirements
 
 - Java 25
@@ -35,6 +39,8 @@ export DB_USER_NAME=your_database_user
 export DB_PASSWORD=your_database_password
 ./mvnw spring-boot:run
 ```
+
+During local development, Spring Boot DevTools watches the compiled classpath and restarts the application after code changes. Restart the application once after adding DevTools; subsequent edits reload automatically when the IDE or Maven recompiles the changed files. DevTools is optional and is not included as a dependency of applications that consume this project.
 
 The server listens on port `8080` and binds to `0.0.0.0` so a Raspberry Pi on the trusted LAN can reach it. Use the laptop's LAN IP from another device.
 
@@ -103,8 +109,9 @@ The model is instructed to answer from retrieved evidence and avoid inventing mi
 ## Q&A reliability
 
 - The primary similarity threshold remains `0.55`; the lower fallback remains `0.45`.
-- If primary retrieval yields fewer than two distinct chunks, the service retries at `0.45` and merges both result sets before deduplication. This preserves strong primary matches while allowing a weaker complementary chunk to supply missing facts.
-- ChatClient generation now uses a typed structured response. It must include one or more exact transcript quotes; the service checks that every quote is present in the retrieved chunks and abstains if the model marks its answer unsupported or returns an invalid quote. This is a source-presence check, not a complete semantic entailment proof, so the regression set and demo questions still need to be evaluated against the real model.
+- If primary retrieval yields fewer than two distinct chunks, the service retries at `0.45` and merges both result sets before deduplication. If evidence remains sparse, it retries at `0.20`; unscoped results are then restricted to matches close to the best score.
+- Action and decision questions return matching transcript sentences directly. Yes/no questions require a directly matching sentence; relationship questions require an explicit sentence naming the requested subject and relationship. These paths abstain when the evidence does not directly support an answer.
+- ChatClient generation uses a typed structured response. Every exact quote must appear in retrieved evidence, address the question, and retain any explicit date or numeric constraint in the question. Returned source metadata is limited to chunks containing the supporting sentences or quotes. These checks reduce unsupported answers, but they are not a complete semantic entailment proof.
 - Retrieval recognizes broad question shapes such as definitions, actions, decisions, plans, and subject-specific relationships. These routes do not assume a particular business domain, product, incident type, or subject vocabulary.
 - Repeated uploads of the same transcript to the same meeting receive deterministic chunk IDs. pgvector upserts by ID, so a network retry does not create another copy of those chunks. Uploading changed text still creates new chunk IDs; the service does not delete older meeting content.
 - The generation temperature is `0.1` for more repeatable answers. The similarity thresholds and 350-token chunking are unchanged.

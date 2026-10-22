@@ -14,12 +14,17 @@ class QueryIntentRouterTest {
         assertEquals("ACTION_ITEM", QueryIntentRouter.plan("What should I get done next?").intent());
         assertEquals("ACTION_ITEM", QueryIntentRouter.plan("What am I responsible for?").intent());
         assertEquals("ACTION_ITEM", QueryIntentRouter.plan("What should I follow up on?").intent());
+        assertEquals("ACTION_ITEM", QueryIntentRouter.plan("What can Priya do next?").intent());
+        assertEquals("ACTION_ITEM", QueryIntentRouter.plan("Who will benchmark the workflow on Monday?").intent());
     }
 
     @Test
     void recognizesGeneralDecisionAndPlanningQuestions() {
         assertEquals("DECISION", QueryIntentRouter.plan("What did we agree about the migration?").intent());
         assertEquals("DECISION", QueryIntentRouter.plan("Which option did the group select?").intent());
+        var decision = QueryIntentRouter.plan("What did the team decide about document processing?");
+        assertEquals("DECISION", decision.intent());
+        assertTrue(decision.searchQueries().stream().anyMatch(query -> query.contains("decide regarding document processing")));
         assertEquals("FUTURE_PLAN", QueryIntentRouter.plan("What upcoming work did we plan?").intent());
         assertEquals("FUTURE_PLAN", QueryIntentRouter.plan("What is the next milestone?").intent());
         assertEquals("TRANSCRIPT", QueryIntentRouter.plan("What did we discuss about the archive?").intent());
@@ -42,11 +47,21 @@ class QueryIntentRouterTest {
     }
 
     @Test
+    void expandsGenericYesNoQuestionsThatDoNotMatchKnownRelationPatterns() {
+        var planned = QueryIntentRouter.plan("Was any customer data lost?");
+
+        assertEquals("YES_NO", planned.intent());
+        assertEquals(4, planned.searchQueries().size());
+        assertTrue(planned.searchQueries().get(1).contains("positive or negative wording"));
+        assertTrue(planned.searchQueries().get(3).contains("customer data lost"));
+    }
+
+    @Test
     void recognizesGenericIssueQuestionsInsteadOfTreatingThemAsDefinitions() {
         var planned = QueryIntentRouter.plan("What is currently wrong with the meeting room equipment?");
 
         assertEquals("ISSUE", planned.intent());
-        assertEquals(3, planned.searchQueries().size());
+        assertEquals(4, planned.searchQueries().size());
         assertTrue(planned.searchQueries().get(1).contains("fault, malfunction, failure"));
     }
 

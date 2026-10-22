@@ -128,6 +128,19 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
             ApiRequestLogSupport.info(log,
                     "Fallback retrieval completed | scope={} | fallback_hits={} | elapsed_ms={}",
                     scope, fallback.size(), ApiRequestLogSupport.elapsedMillis(retrievalStartedAt));
+            int mergedCount = TranscriptDocumentSupport.deduplicateAndLimit(
+                    retrieved, SathiConstants.CHAT_RESULT_COUNT).size();
+            if (mergedCount < SathiConstants.CHAT_MIN_PRIMARY_RESULTS) {
+                ApiRequestLogSupport.info(log,
+                        "Retrieval still sparse; retrying with last-resort threshold | scope={} | chunks={} | threshold={}",
+                        scope, mergedCount, SathiConstants.RETRIEVAL_LAST_RESORT_SIMILARITY_THRESHOLD);
+                List<Document> lastResort = search(plannedQuery.searchQueries(), normalizedMeetingId,
+                        SathiConstants.RETRIEVAL_LAST_RESORT_SIMILARITY_THRESHOLD);
+                retrieved.addAll(lastResort);
+                ApiRequestLogSupport.info(log,
+                        "Last-resort retrieval completed | scope={} | hits={} | elapsed_ms={}",
+                        scope, lastResort.size(), ApiRequestLogSupport.elapsedMillis(retrievalStartedAt));
+            }
         } else {
             ApiRequestLogSupport.info(log,
                     "Primary retrieval completed | scope={} | distinct_chunks={} | elapsed_ms={}",
@@ -170,32 +183,105 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
             return new ChatAnswerResult(SathiConstants.CHAT_NOT_FOUND_MESSAGE, normalizedMeetingId, List.of());
         }
 
-        var sources = contextDocuments.stream()
-                .map(TranscriptDocumentSupport::toSource)
-                .toList();
+        var sources = toSources(contextDocuments);
         String context = contextDocuments.stream()
                 .map(TranscriptDocumentSupport::toTraceableContext)
                 .collect(Collectors.joining("\n\n"));
 
-        var definitionAnswer = QnaEvidenceSupport.answerDefinitionFromEvidence(normalizedQuestion, contextDocuments);
+        if (plannedQuery.intent().equals("ACTION_ITEM")) {
+            var actionAnswer = QnaEvidenceSupport.answerActionFromEvidence(normalizedQuestion, contextDocuments);
+            if (actionAnswer.isPresent()) {
+                List<Document> supportingDocuments = QnaEvidenceSupport.documentsContainingEvidence(
+                        List.of(actionAnswer.get()), contextDocuments);
+                ApiRequestLogSupport.info(log,
+                        "Answered action question from matching transcript sentences | scope={}", scope);
+                return new ChatAnswerResult(actionAnswer.get(), normalizedMeetingId, toSources(supportingDocuments));
+            }
+            ApiRequestLogSupport.info(log,
+                    "No directly matching action sentence found; abstaining | scope={}", scope);
+            return new ChatAnswerResult(SathiConstants.CHAT_NOT_FOUND_MESSAGE, normalizedMeetingId, List.of());
+        }
+
+        if (plannedQuery.intent().equals("DECISION")) {
+            var decisionAnswer = QnaEvidenceSupport.answerDecisionFromEvidence(normalizedQuestion, contextDocuments);
+            if (decisionAnswer.isPresent()) {
+                List<Document> supportingDocuments = QnaEvidenceSupport.documentsContainingEvidence(
+                        List.of(decisionAnswer.get()), contextDocuments);
+                ApiRequestLogSupport.info(log,
+                        "Answered decision question from matching transcript sentences | scope={}", scope);
+                return new ChatAnswerResult(decisionAnswer.get(), normalizedMeetingId, toSources(supportingDocuments));
+            }
+            ApiRequestLogSupport.info(log,
+                    "No directly matching decision sentence found; abstaining | scope={}", scope);
+            return new ChatAnswerResult(SathiConstants.CHAT_NOT_FOUND_MESSAGE, normalizedMeetingId, List.of());
+        }
+
+        if (plannedQuery.intent().equals("ISSUE")) {
+            var issueAnswer = QnaEvidenceSupport.answerIssueFromEvidence(normalizedQuestion, contextDocuments);
+            if (issueAnswer.isPresent()) {
+                List<Document> supportingDocuments = QnaEvidenceSupport.documentsContainingEvidence(
+                        List.of(issueAnswer.get()), contextDocuments);
+                ApiRequestLogSupport.info(log,
+                        "Answered issue question directly from matching transcript sentence | scope={}", scope);
+                return new ChatAnswerResult(issueAnswer.get(), normalizedMeetingId, toSources(supportingDocuments));
+            }
+        }
+
+        if (plannedQuery.intent().equals("YES_NO")) {
+            var yesNoAnswer = QnaEvidenceSupport.answerYesNoFromEvidence(normalizedQuestion, contextDocuments);
+            if (yesNoAnswer.isPresent()) {
+                List<Document> supportingDocuments = QnaEvidenceSupport.documentsContainingEvidence(
+                        List.of(yesNoAnswer.get()), contextDocuments);
+                ApiRequestLogSupport.info(log,
+                        "Answered yes/no question directly from matching transcript sentence | scope={}", scope);
+                return new ChatAnswerResult(yesNoAnswer.get(), normalizedMeetingId, toSources(supportingDocuments));
+            }
+            ApiRequestLogSupport.info(log,
+                    "No single sentence directly answers yes/no question; abstaining | scope={}", scope);
+            return new ChatAnswerResult(SathiConstants.CHAT_NOT_FOUND_MESSAGE, normalizedMeetingId, List.of());
+        }
+
+        if (plannedQuery.intent().equals("RELATION")) {
+            var relationAnswer = QnaEvidenceSupport.answerRelationFromEvidence(requiredSubject, contextDocuments);
+            if (relationAnswer.isPresent()) {
+                List<Document> supportingDocuments = QnaEvidenceSupport.documentsContainingEvidence(
+                        List.of(relationAnswer.get()), contextDocuments);
+                ApiRequestLogSupport.info(log,
+                        "Answered relation question from an explicit matching sentence | scope={}", scope);
+                return new ChatAnswerResult(relationAnswer.get(), normalizedMeetingId, toSources(supportingDocuments));
+            }
+            ApiRequestLogSupport.info(log,
+                    "No explicit relation sentence found; abstaining | scope={} | subject={}", scope, requiredSubject);
+            return new ChatAnswerResult(SathiConstants.CHAT_NOT_FOUND_MESSAGE, normalizedMeetingId, List.of());
+        }
+
+        var definitionAnswer = plannedQuery.intent().equals("DEFINITION")
+                ? QnaEvidenceSupport.answerDefinitionFromEvidence(normalizedQuestion, contextDocuments)
+                : java.util.Optional.<String>empty();
         if (definitionAnswer.isPresent()) {
+            List<Document> supportingDocuments = QnaEvidenceSupport.documentsContainingEvidence(
+                    List.of(definitionAnswer.get()), contextDocuments);
             ApiRequestLogSupport.info(log,
                     "Answered entity definition directly from transcript evidence | scope={} | answer_characters={}",
                     scope, definitionAnswer.get().length());
             ApiRequestLogSupport.infoWhen(log, includeContentInLogs,
                     "Exact deterministic /ai/qna answer | scope={} | answer=\n{}", scope, definitionAnswer.get());
-            return new ChatAnswerResult(definitionAnswer.get(), normalizedMeetingId, sources);
+            return new ChatAnswerResult(definitionAnswer.get(), normalizedMeetingId, toSources(supportingDocuments));
         }
 
-        var deterministicAnswer = EvidenceCalculation.calculatePercentageChange(
+        var calculation = EvidenceCalculation.calculatePercentageChangeWithEvidence(
                 normalizedQuestion, contextDocuments.stream().map(Document::getText).toList());
-        if (deterministicAnswer.isPresent()) {
+        if (calculation.isPresent()) {
+            EvidenceCalculation.CalculationResult result = calculation.get();
+            List<Document> supportingDocuments = contextDocuments.stream()
+                    .filter(document -> document.getText().equals(result.evidence()))
+                    .toList();
             ApiRequestLogSupport.info(log,
                     "Calculated percentage change from retrieved transcript evidence | scope={} | sources={}",
-                    scope, sources.size());
+                    scope, supportingDocuments.size());
             ApiRequestLogSupport.infoWhen(log, includeContentInLogs,
-                    "Exact deterministic /ai/qna answer | scope={} | answer=\n{}", scope, deterministicAnswer.get());
-            return new ChatAnswerResult(deterministicAnswer.get(), normalizedMeetingId, sources);
+                    "Exact deterministic /ai/qna answer | scope={} | answer=\n{}", scope, result.answer());
+            return new ChatAnswerResult(result.answer(), normalizedMeetingId, toSources(supportingDocuments));
         }
 
         ApiRequestLogSupport.info(log, "Retrieved {} unique ChatClient evidence chunks | scope={} | best_score={}",
@@ -221,28 +307,39 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
         }
         QnaEvidenceSupport.EvidenceQuoteCheck quoteCheck =
                 QnaEvidenceSupport.checkEvidenceQuotes(generated.evidenceQuotes(), contextDocuments);
+        boolean quotesAddressQuestion = QnaEvidenceSupport.evidenceQuotesAddressQuestion(
+                normalizedQuestion, generated.evidenceQuotes());
         ApiRequestLogSupport.debug(log,
-                "Structured Q&A response validated | scope={} | model_supported={} | valid_quotes={}/{} | answer_characters={}",
+                "Structured Q&A response validated | scope={} | model_supported={} | valid_quotes={}/{} | quotes_address_question={} | answer_characters={}",
                 scope, generated.supportedByEvidence(), quoteCheck.validCount(), quoteCheck.totalCount(),
-                generated.answer().length());
-        if (!generated.supportedByEvidence() || !quoteCheck.valid()) {
+                quotesAddressQuestion, generated.answer().length());
+        if (!generated.supportedByEvidence() || !quoteCheck.valid() || !quotesAddressQuestion) {
             ApiRequestLogSupport.info(log,
-                    "Rejected generated answer | scope={} | model_supported={} | valid_quotes={}/{} | rejection_reason={}",
+                    "Rejected generated answer | scope={} | model_supported={} | valid_quotes={}/{} | quotes_address_question={} | rejection_reason={}",
                     scope, generated.supportedByEvidence(), quoteCheck.validCount(), quoteCheck.totalCount(),
-                    !generated.supportedByEvidence() ? "model_marked_unsupported" : "quote_not_found_in_sources");
+                    quotesAddressQuestion,
+                    !generated.supportedByEvidence() ? "model_marked_unsupported"
+                            : !quoteCheck.valid() ? "quote_not_found_in_sources" : "quote_not_relevant_to_question");
             ApiRequestLogSupport.debugWhen(log, includeContentInLogs,
                     "Rejected generated answer content | scope={} | answer={} | evidence_quotes={}",
                     scope, generated.answer(), generated.evidenceQuotes());
             return new ChatAnswerResult(SathiConstants.CHAT_NOT_FOUND_MESSAGE, normalizedMeetingId, List.of());
         }
-        String answer = generated.answer().trim();
+        String answer = QnaEvidenceSupport.completeFragmentAnswer(
+                generated.answer().trim(), generated.evidenceQuotes()).trim();
+        List<Document> supportingDocuments = QnaEvidenceSupport.documentsContainingEvidence(
+                generated.evidenceQuotes(), contextDocuments);
 
         ApiRequestLogSupport.info(log,
                 "Generated ChatClient answer | scope={} | evidence_chunks={} | elapsed_ms={}",
                 scope, sources.size(), ApiRequestLogSupport.elapsedMillis(startedAt));
         ApiRequestLogSupport.debugWhen(log, includeContentInLogs,
                 "Exact generated /ai/qna answer | scope={} | answer=\n{}", scope, answer);
-        return new ChatAnswerResult(answer.trim(), normalizedMeetingId, sources);
+        return new ChatAnswerResult(answer.trim(), normalizedMeetingId, toSources(supportingDocuments));
+    }
+
+    private static List<org.stg.savan.savanserver.model.RetrievalSource> toSources(List<Document> documents) {
+        return documents.stream().map(TranscriptDocumentSupport::toSource).toList();
     }
 
     private List<Document> search(List<String> queries, String meetingId, double threshold) {

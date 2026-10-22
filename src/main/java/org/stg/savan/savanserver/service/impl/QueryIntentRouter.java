@@ -13,6 +13,8 @@ final class QueryIntentRouter {
     private static final Pattern ACTION_ITEM = Pattern.compile(
             "\\b(to[ -]?do|action items?|tasks?|next steps?|follow[ -]?ups?|"
                     + "on my plate|what should i (?:do|get done)|what do i need to do|"
+                    + "what (?:can|could|should|must) (?:[\\p{L}\\p{N}_'-]+\\s+){0,3}do next|"
+                    + "who (?:will|would|can|should)\\b|"
                     + "what needs to be done|what can (?:i|we) do next|what do i do next|"
                     + "what is (?:my )?(?:next step|next action|next task)|"
                     + "what am i responsible for|what is assigned to me|"
@@ -30,6 +32,8 @@ final class QueryIntentRouter {
     private static final Pattern ISSUE_QUESTION = Pattern.compile(
             "(?iu)^\\s*(?:what(?:'s|\\s+is)\\s+(?:currently\\s+)?(?:wrong|broken|not\\s+working)\\s+with|"
                     + "what(?:'s|\\s+is)\\s+the\\s+(?:issue|problem)\\s+with)\\s+(.+?)\\s*[?.!]*\\s*$");
+    private static final Pattern YES_NO_QUESTION = Pattern.compile(
+            "(?iu)^\\s*(?:did|do|does|is|are|was|were|has|have|had|can|could|will|would)\\b.*[?.!]?$");
     private static final Pattern RELATION_QUESTION = Pattern.compile(
             "(?iu)\\b(?:affect(?:s|ed)?|impact(?:s|ed)?|influence(?:s|d)?|"
                     + "change(?:s|d)?|alter(?:s|ed)?|delay(?:s|ed)?|block(?:s|ed)?|"
@@ -50,6 +54,11 @@ final class QueryIntentRouter {
     private static final Set<String> RELATION_SUBJECT_STOP_WORDS = Set.of(
             "after", "and", "before", "because", "by", "during", "for", "from", "in", "into",
             "of", "on", "or", "through", "to", "under", "until", "when", "while", "with");
+    private static final Set<String> QUESTION_STOP_WORDS = Set.of(
+            "a", "an", "are", "about", "can", "did", "do", "does", "for", "from", "had", "has", "have",
+            "how", "i", "in", "is", "it", "me", "my", "of", "on", "the", "this", "that", "to",
+            "regarding", "was", "we", "were", "what", "when", "where", "which", "who", "why", "will", "with",
+            "would", "you", "your");
 
     private QueryIntentRouter() {
     }
@@ -66,13 +75,26 @@ final class QueryIntentRouter {
                             + ", including relevant decisions, changes, reasons, and outcomes."),
                     relationTarget);
         }
+        if (YES_NO_QUESTION.matcher(question).matches()) {
+            return new PlannedQuery("YES_NO", List.of(
+                    question,
+                    "Find explicit transcript statements that answer this yes-or-no question, including "
+                            + "positive or negative wording and related terms.",
+                    question + " Look for synonyms, outcomes, and explicit confirmation or denial.",
+                    "Transcript evidence about " + questionFocus(question)
+                            + "; stated outcome, confirmation, denial, and whether it occurred."), null);
+        }
         if (ACTION_ITEM.matcher(normalized).find()) {
             return expanded("ACTION_ITEM", question,
                     "Find mentioned tasks, assigned responsibilities, owners, follow-ups, and due dates.");
         }
         if (DECISION.matcher(normalized).find()) {
-            return expanded("DECISION", question,
-                    "Find relevant choices, agreements, rejected options, and reasons given for decisions.");
+            String focus = decisionFocus(question);
+            return new PlannedQuery("DECISION", List.of(
+                    question,
+                    question + "\nFind relevant choices, agreements, rejected options, and reasons given for decisions.",
+                    "What decisions, choices, agreements, or selected options were recorded about " + focus + "?",
+                    "What did the group decide regarding " + focus + "?"), null);
         }
         if (FUTURE_PLAN.matcher(normalized).find()) {
             return expanded("FUTURE_PLAN", question,
@@ -85,6 +107,7 @@ final class QueryIntentRouter {
                     question,
                     "Find the issue, problem, fault, malfunction, failure, or item reported as not working with "
                             + subject + ".",
+                    subject,
                     subject + " issue problem fault malfunction failure not working repair"), null);
         }
         Matcher definition = DEFINITION_QUESTION.matcher(question);
@@ -132,6 +155,20 @@ final class QueryIntentRouter {
         return java.util.Arrays.stream(value.split("\\s+"))
                 .takeWhile(word -> !RELATION_SUBJECT_STOP_WORDS.contains(word.toLowerCase(Locale.ROOT)))
                 .collect(java.util.stream.Collectors.joining(" "));
+    }
+
+    private static String questionFocus(String question) {
+        return java.util.Arrays.stream(question.toLowerCase(Locale.ROOT).replaceAll("[?.!]", "").split("\\s+"))
+                .filter(word -> !QUESTION_STOP_WORDS.contains(word))
+                .collect(java.util.stream.Collectors.joining(" "));
+    }
+
+    private static String decisionFocus(String question) {
+        String focus = questionFocus(question).replaceAll(
+                "(?iu)\\b(?:team|group|meeting|decide|decides|decided|decision|decisions|choose|chose|chosen|"
+                        + "select|selected|selecting|option|options|agree|agreed|agreement)\\b", " ")
+                .replaceAll("\\s+", " ").trim();
+        return focus.isBlank() ? "the meeting" : focus;
     }
 
     private static boolean isGenericRelationTarget(String value) {

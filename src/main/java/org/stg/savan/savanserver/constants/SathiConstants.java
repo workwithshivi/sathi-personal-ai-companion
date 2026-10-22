@@ -21,6 +21,7 @@ public final class SathiConstants {
     public static final int CHAT_MIN_PRIMARY_RESULTS = 2;
     public static final double SIMILARITY_THRESHOLD = 0.55;
     public static final double RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD = 0.45;
+    public static final double RETRIEVAL_LAST_RESORT_SIMILARITY_THRESHOLD = 0.20;
     /** Maximum score distance from the best match for unscoped retrieval evidence. */
     public static final double UNSCOPED_RELEVANCE_SCORE_MARGIN = 0.15;
 
