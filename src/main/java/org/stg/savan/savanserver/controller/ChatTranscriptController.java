@@ -59,7 +59,7 @@ public class ChatTranscriptController {
         try {
             String meetingId = chatTranscriptService.saveTranscript(
                     transcriptText, request.device(), request.meetingId());
-            ApiRequestLogSupport.info(log,
+            ApiRequestLogSupport.debug(log,
                     "Completed /ai/transcripts request | meeting_id={} | characters={} | elapsed_ms={}",
                     meetingId, transcriptText.length(), ApiRequestLogSupport.elapsedMillis(startedAt));
             return ResponseEntity.status(HttpStatus.CREATED)
@@ -81,40 +81,34 @@ public class ChatTranscriptController {
         String question = request.question();
         ApiRequestLogSupport.info(log, "Received /ai/qna request | meeting_id={} | question_characters={}",
                 request.meetingId(), question == null ? 0 : question.length());
-        if (includeContentInLogs) {
-            ApiRequestLogSupport.infoWhen(log, includeContentInLogs,
-                    "Exact /ai/qna question | meeting_id={} | question={}", request.meetingId(), question);
-        }
-
         if (question == null || question.isBlank()) {
+            ApiErrorResponse response = new ApiErrorResponse("A non-empty question field is required");
             ApiRequestLogSupport.info(log, "Rejected /ai/qna request | reason=empty_question");
-            return ResponseEntity.badRequest()
-                    .body(new ApiErrorResponse("A non-empty question field is required"));
+            ApiRequestLogSupport.apiExchange(log, "/ai/qna", HttpStatus.BAD_REQUEST.value(), request, response);
+            return ResponseEntity.badRequest().body(response);
         }
 
         try {
             ChatAnswerResult result = chatTranscriptService.answerQuestion(
-                    question.trim(), request.meetingId());
-            ApiRequestLogSupport.debug(log, "Returning /ai/qna response | meeting_id={} | sources={}",
-                    result.meetingId(), result.sources());
+                    question.trim(), request.meetingId(), request.conversationId());
             ApiRequestLogSupport.info(log,
                     "Completed /ai/qna request | meeting_id={} | sources={} | answer_characters={} | elapsed_ms={}",
                     result.meetingId(), result.sources().size(), result.answer().length(),
                     ApiRequestLogSupport.elapsedMillis(startedAt));
-            if (includeContentInLogs) {
-                ApiRequestLogSupport.infoWhen(log, includeContentInLogs,
-                        "Exact /ai/qna answer | meeting_id={} | answer=\n{}", result.meetingId(), result.answer());
-            }
+            ApiRequestLogSupport.apiExchange(log, "/ai/qna", HttpStatus.OK.value(), request, result);
             return ResponseEntity.ok(result);
         } catch (IllegalArgumentException e) {
+            ApiErrorResponse response = new ApiErrorResponse(e.getMessage());
             ApiRequestLogSupport.info(log, "Rejected /ai/qna request | reason={}", e.getMessage());
-            return ResponseEntity.badRequest().body(new ApiErrorResponse(e.getMessage()));
+            ApiRequestLogSupport.apiExchange(log, "/ai/qna", HttpStatus.BAD_REQUEST.value(), request, response);
+            return ResponseEntity.badRequest().body(response);
         } catch (RuntimeException e) {
+            ApiErrorResponse response = new ApiErrorResponse("Chat answering is temporarily unavailable");
             ApiRequestLogSupport.info(log, "Failed /ai/qna request | meeting_id={} | exception={} | message={}",
                     request.meetingId(), e.getClass().getSimpleName(), e.getMessage());
             ApiRequestLogSupport.debug(log, "/ai/qna failure stack trace | meeting_id={}", request.meetingId(), e);
-            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                    .body(new ApiErrorResponse("Chat answering is temporarily unavailable"));
+            ApiRequestLogSupport.apiExchange(log, "/ai/qna", HttpStatus.SERVICE_UNAVAILABLE.value(), request, response);
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(response);
         }
     }
 

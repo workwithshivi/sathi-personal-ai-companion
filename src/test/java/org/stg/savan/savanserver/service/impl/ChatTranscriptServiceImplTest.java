@@ -7,6 +7,8 @@ import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.stg.savan.savanserver.model.GroundedChatAnswer;
+import org.stg.savan.savanserver.model.QueryExpansionResult;
+import org.stg.savan.savanserver.service.support.MeetingMemoryRepository;
 
 import java.util.List;
 import java.util.Map;
@@ -83,6 +85,90 @@ class ChatTranscriptServiceImplTest {
 
         assertEquals(1, result.sources().size());
         assertEquals("The team chose to keep both flows available.", result.answer());
+    }
+
+    @Test
+    void retriesWithBroaderEvidenceWhenInitialChunksDoNotAnswerGenericQuestion() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        ChatClient chatClient = mockChatClient(
+                new GroundedChatAnswer("Not found.", List.of(), false),
+                new GroundedChatAnswer(
+                        "Feedback was to keep document processing on the laptop.",
+                        List.of("Feedback was to keep document processing on the laptop."), true));
+        Document initialOne = evidence("The team selected a meeting room for the demo.", 0, 0.61);
+        Document initialTwo = evidence("The application uses PostgreSQL with pgvector.", 1, 0.60);
+        Document relevantFallback = evidence(
+                "Feedback was to keep document processing on the laptop.", 2, 0.57);
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenAnswer(invocation -> {
+            SearchRequest request = invocation.getArgument(0);
+            return request.getSimilarityThreshold() < 0.5
+                    ? List.of(relevantFallback)
+                    : List.of(initialOne, initialTwo);
+        });
+        ChatTranscriptServiceImpl service = new ChatTranscriptServiceImpl(
+                vectorStore,
+                TokenTextSplitter.builder().withChunkSize(350).build(),
+                chatClient);
+
+        var result = service.answerQuestion("What was the feedback?", null);
+
+        assertEquals("Feedback was to keep document processing on the laptop.", result.answer());
+        assertEquals(1, result.sources().size());
+        assertEquals(3L, org.mockito.Mockito.mockingDetails(chatClient).getInvocations().stream()
+                .filter(invocation -> invocation.getMethod().getName().equals("prompt"))
+                .count());
+    }
+
+    @Test
+    void answersCorpusOverviewFromEveryMeetingSummaryWithoutMeetingId() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        ChatClient chatClient = mockChatClient(
+                new GroundedChatAnswer("The collection contains several meetings.",
+                        List.of("An initial retrieved sentence."), true, true),
+                new GroundedChatAnswer("Across both meetings, the team reviewed two work areas.",
+                        List.of("Meeting A covered the release plan.", "Meeting B covered device testing."), true));
+        MeetingMemoryRepository repository = mock(MeetingMemoryRepository.class);
+        when(vectorStore.similaritySearch(any(SearchRequest.class)))
+                .thenReturn(List.of(evidence("An initial retrieved sentence.", 0, 0.60)));
+        Document transcriptA = corpusDocument("meeting-a", "Release plan details.", "transcript", 0);
+        Document transcriptB = corpusDocument("meeting-b", "Device test details.", "transcript", 0);
+        Document summaryA = corpusDocument("meeting-a", "Meeting summary: Release plan.\n"
+                + "Verbatim transcript evidence:\n- Meeting A covered the release plan.", "meeting_summary", -1);
+        Document summaryB = corpusDocument("meeting-b", "Meeting summary: Device testing.\n"
+                + "Verbatim transcript evidence:\n- Meeting B covered device testing.", "meeting_summary", -1);
+        when(repository.findAllTranscriptChunks()).thenReturn(List.of(transcriptA, transcriptB));
+        when(repository.findAllMeetingSummaries()).thenReturn(List.of(summaryA, summaryB));
+        ChatTranscriptServiceImpl service = new ChatTranscriptServiceImpl(
+                vectorStore,
+                TokenTextSplitter.builder().withChunkSize(350).build(),
+                chatClient,
+                repository);
+
+        var result = service.answerQuestion("Give me a summary of all the meetings?", null);
+
+        assertEquals("Across both meetings, the team reviewed two work areas.", result.answer());
+        assertEquals(2, result.sources().size());
+        assertEquals(List.of("meeting-a", "meeting-b"),
+                result.sources().stream().map(source -> source.meetingId()).sorted().toList());
+        verify(repository).findAllMeetingSummaries();
+    }
+
+    @Test
+    void treatsNullCorpusWideFlagAsAnOrdinaryQuestion() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        ChatClient chatClient = mockChatClient(new GroundedChatAnswer(
+                "The release plan is ready.", List.of("The release plan is ready."), true, null));
+        Document evidence = evidence("The release plan is ready.", 0, 0.62);
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(evidence));
+        ChatTranscriptServiceImpl service = new ChatTranscriptServiceImpl(
+                vectorStore,
+                TokenTextSplitter.builder().withChunkSize(350).build(),
+                chatClient);
+
+        var result = service.answerQuestion("What is the release plan status?", null);
+
+        assertEquals("The release plan is ready.", result.answer());
+        assertEquals(1, result.sources().size());
     }
 
     @Test
@@ -398,6 +484,10 @@ class ChatTranscriptServiceImplTest {
     }
 
     private static ChatClient mockChatClient(String answer, String quote, boolean supported) {
+        return mockChatClient(new GroundedChatAnswer(answer, List.of(quote), supported));
+    }
+
+    private static ChatClient mockChatClient(GroundedChatAnswer... answers) {
         ChatClient chatClient = mock(ChatClient.class);
         ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
         ChatClient.CallResponseSpec response = mock(ChatClient.CallResponseSpec.class);
@@ -409,7 +499,11 @@ class ChatTranscriptServiceImplTest {
         when(response.entity(
                 org.mockito.ArgumentMatchers.eq(GroundedChatAnswer.class),
                 org.mockito.ArgumentMatchers.<Consumer<ChatClient.EntityParamSpec>>any()))
-                .thenReturn(new GroundedChatAnswer(answer, List.of(quote), supported));
+                .thenReturn(answers[0], java.util.Arrays.copyOfRange(answers, 1, answers.length));
+        when(response.entity(
+                org.mockito.ArgumentMatchers.eq(QueryExpansionResult.class),
+                org.mockito.ArgumentMatchers.<Consumer<ChatClient.EntityParamSpec>>any()))
+                .thenReturn(new QueryExpansionResult(List.of("What feedback was recorded?")));
         return chatClient;
     }
 
@@ -421,6 +515,19 @@ class ChatTranscriptServiceImplTest {
                         "chunk_index", chunkIndex,
                         "parent_document_id", "parent-" + chunkIndex))
                 .score(score)
+                .build();
+    }
+
+    private static Document corpusDocument(String meetingId, String text, String memoryType, int chunkIndex) {
+        return Document.builder()
+                .id(meetingId + "-" + chunkIndex)
+                .text(text)
+                .metadata(Map.of(
+                        "meeting_id", meetingId,
+                        "memory_type", memoryType,
+                        "pipeline", "chat_client",
+                        "chunk_index", chunkIndex,
+                        "parent_document_id", "parent-" + meetingId))
                 .build();
     }
 }

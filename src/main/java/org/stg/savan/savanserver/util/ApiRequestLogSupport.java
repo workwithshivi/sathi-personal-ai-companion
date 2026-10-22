@@ -16,6 +16,11 @@ public final class ApiRequestLogSupport {
         log.debug(message, arguments);
     }
 
+    public static void apiExchange(Logger log, String endpoint, int status, Object request, Object response) {
+        log.info("API exchange | endpoint={} | status={} | request={} | response={}",
+                endpoint, status, request, response);
+    }
+
     public static void infoWhen(Logger log, boolean enabled, String message, Object... arguments) {
         if (enabled) {
             log.info(message, arguments);

@@ -12,6 +12,7 @@ class MemoryTypeTest {
         assertArrayEquals(
                 new MemoryType[]{
                         MemoryType.TRANSCRIPT,
+                        MemoryType.MEETING_SUMMARY,
                         MemoryType.ACTION_ITEM,
                         MemoryType.DECISION,
                         MemoryType.FUTURE_PLAN
@@ -19,6 +20,7 @@ class MemoryTypeTest {
                 MemoryType.values()
         );
         assertEquals("transcript", MemoryType.TRANSCRIPT.getMetadataValue());
+        assertEquals("meeting_summary", MemoryType.MEETING_SUMMARY.getMetadataValue());
         assertEquals("action_item", MemoryType.ACTION_ITEM.getMetadataValue());
         assertEquals("decision", MemoryType.DECISION.getMetadataValue());
         assertEquals("future_plan", MemoryType.FUTURE_PLAN.getMetadataValue());

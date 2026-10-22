@@ -8,6 +8,19 @@ import java.util.List;
 public record GroundedChatAnswer(
         String answer,
         @JsonProperty("evidence_quotes") List<String> evidenceQuotes,
-        @JsonProperty("supported_by_evidence") boolean supportedByEvidence
+        @JsonProperty("supported_by_evidence") Boolean supportedByEvidence,
+        @JsonProperty("corpus_wide_request") Boolean corpusWideRequest,
+        @JsonProperty("blocked_by_safeguard") Boolean blockedBySafeguard
 ) {
+    public GroundedChatAnswer(String answer, List<String> evidenceQuotes, Boolean supportedByEvidence) {
+        this(answer, evidenceQuotes, supportedByEvidence, false, false);
+    }
+
+    public GroundedChatAnswer(
+            String answer,
+            List<String> evidenceQuotes,
+            Boolean supportedByEvidence,
+            Boolean corpusWideRequest) {
+        this(answer, evidenceQuotes, supportedByEvidence, corpusWideRequest, false);
+    }
 }

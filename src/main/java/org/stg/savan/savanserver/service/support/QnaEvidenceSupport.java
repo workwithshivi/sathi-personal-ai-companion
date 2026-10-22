@@ -191,16 +191,13 @@ public final class QnaEvidenceSupport {
     /** Checks a source quote against the original question and any generic retrieval rewrites. */
     public static boolean evidenceQuotesAddressQuestion(
             String question, List<String> quotes, List<String> searchQueries) {
-        if (quotes == null || quotes.isEmpty()) {
+        if (!evidenceQuotesRespectQuestionConstraints(question, quotes)) {
             return false;
         }
         String quotedText = quotes.stream()
                 .filter(java.util.Objects::nonNull)
                 .map(QnaEvidenceSupport::normalizeEvidenceText)
                 .collect(java.util.stream.Collectors.joining(" "));
-        if (!containsAllConstraints(quotedText, questionConstraints(question))) {
-            return false;
-        }
         List<String> queries = searchQueries == null || searchQueries.isEmpty()
                 ? List.of(question) : searchQueries;
         return queries.stream()
@@ -211,6 +208,18 @@ public final class QnaEvidenceSupport {
                     int requiredOverlap = Math.max(1, (terms.size() + 2) / 3);
                     return overlap >= requiredOverlap;
                 });
+    }
+
+    /** Checks explicit dates and numeric constraints without requiring lexical overlap for synthesis queries. */
+    public static boolean evidenceQuotesRespectQuestionConstraints(String question, List<String> quotes) {
+        if (quotes == null || quotes.isEmpty()) {
+            return false;
+        }
+        String quotedText = quotes.stream()
+                .filter(java.util.Objects::nonNull)
+                .map(QnaEvidenceSupport::normalizeEvidenceText)
+                .collect(java.util.stream.Collectors.joining(" "));
+        return containsAllConstraints(quotedText, questionConstraints(question));
     }
 
     /** Keeps API citations limited to chunks that contain the supporting sentence or quote. */
@@ -319,7 +328,8 @@ public final class QnaEvidenceSupport {
     }
 
     public static String meetingIdFilter(String meetingId) {
-        String pipelineFilter = "pipeline == '" + SathiConstants.CHAT_PIPELINE + "'";
+        String pipelineFilter = "pipeline == '" + SathiConstants.CHAT_PIPELINE
+                + "' && memory_type == 'transcript'";
         return meetingId == null ? pipelineFilter : pipelineFilter + " && meeting_id == '" + meetingId + "'";
     }
 

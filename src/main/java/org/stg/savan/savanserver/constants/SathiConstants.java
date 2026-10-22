@@ -1,5 +1,6 @@
 package org.stg.savan.savanserver.constants;
 
+import java.util.List;
 import java.util.regex.Pattern;
 
 /** Shared application values used by transcript ingestion and retrieval. */
@@ -11,7 +12,13 @@ public final class SathiConstants {
     public static final String CHAT_PIPELINE = "chat_client";
     public static final String CHAT_NOT_FOUND_MESSAGE =
             "I could not find enough information in the saved transcripts to answer that.";
+    public static final String SAFE_GUARD_BLOCK_MESSAGE =
+            "I cannot answer because the request contains a locally configured restricted term.";
+    public static final List<String> SAFE_GUARD_SENSITIVE_WORDS = List.of("confidential");
+    public static final String GENERAL_RESPONSE_PREFIX =
+            "There is no information available in the saved transcripts for this question. Here is a general response: ";
     public static final String DEFAULT_CHAT_DEVICE = "laptop";
+    public static final String RAG_DOCUMENTS_CONTEXT_KEY = "sathi_rag_evidence_documents";
     public static final String MEETING_ID_PREFIX = "meeting-";
     public static final Pattern MEETING_ID_PATTERN = Pattern.compile(
             "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}");
@@ -51,20 +58,47 @@ public final class SathiConstants {
             show the calculation briefly, and do not invent or combine unrelated values.
             If the excerpts do not support an answer, say that the information was not present.
             Do not claim certainty beyond what the excerpts say.
-            Return a structured result with answer, evidence_quotes, and supported_by_evidence.
+            Return a structured result with answer, evidence_quotes, supported_by_evidence, and corpus_wide_request.
+            Set corpus_wide_request to true only when the user asks for a synthesis or overview across the
+            entire saved collection. Set it to false for questions seeking a particular fact, even if no
+            meeting ID was supplied. This flag describes requested data scope, not answer confidence.
             evidence_quotes must contain one or more exact, contiguous quotes copied from the supplied excerpts
             that directly support the answer. Set supported_by_evidence to false and use an empty quote list
             when the excerpts do not answer the question. Never invent or paraphrase an evidence quote.
             """;
 
+    public static final String GENERAL_RESPONSE_SYSTEM_PROMPT = """
+            You are answering only after a search of the saved transcripts did not find usable evidence.
+            Always provide a concise general response. If the question asks about private or historical
+            facts that are not in the transcript, clearly say that you cannot determine those facts from
+            the available context; do not guess what a particular person or team said, decided, did, or
+            experienced. When useful, offer general information or ask for the missing context. Do not
+            claim that general information came from the user's meetings or saved documents. Return only
+            the structured field answer.
+            """;
+
     public static final String QUERY_EXPANSION_SYSTEM_PROMPT = """
-            Rewrite a user's question into up to three short search queries that help find the same
-            information in transcript wording. Use natural paraphrases, common synonyms, and closely
-            related everyday terms that people use for the same kind of information (for example,
-            feedback, suggestions, comments, and recommendations). Vary the wording meaningfully;
-            do not return near-duplicates.
-            Preserve the original subject, scope, dates, names, and requested relationship. Do not broaden
-            the question into a different topic, add assumptions, or answer the question.
-            Return only the structured queries field. Return an empty list if no useful rewrite is possible.
+            Rewrite the user's question into up to three distinct search queries that preserve the
+            information need while expressing it in different natural wording. Infer useful alternate
+            phrasing from the question itself; do not rely on a fixed topic vocabulary or examples.
+            Preserve names, dates, scope, and requested relationships. Do not introduce a new topic,
+            add assumptions, or answer the question. Return only the structured queries field.
+            """;
+
+    public static final String FOLLOW_UP_QUERY_SYSTEM_PROMPT = """
+            Rewrite the current follow-up question into up to three standalone retrieval queries.
+            Use the prior conversation only to resolve references such as pronouns or phrases like
+            'that' and 'the earlier one'. Preserve the current question's intent, scope, names, dates,
+            and requested relationships. Conversation content is not evidence and must not add facts
+            the current question did not ask for. Do not answer the question. Return only the structured
+            queries field.
+            """;
+
+    public static final String MEETING_SUMMARY_SYSTEM_PROMPT = """
+            Create a concise, neutral summary of the supplied transcript excerpts for later retrieval.
+            Keep the meeting's main topics, decisions, plans, outcomes, and important facts. Do not add
+            assumptions. Include several exact, contiguous transcript quotes that support the summary.
+            Return a structured result with summary, evidence_quotes, and supported_by_evidence. Set
+            supported_by_evidence to false and use no quotes if the excerpts cannot support a summary.
             """;
 }

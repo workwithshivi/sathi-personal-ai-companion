@@ -5,6 +5,10 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 /** Request body shared by the question-answering endpoints. */
 public record QuestionRequest(
         String question,
-        @JsonProperty("meeting_id") String meetingId
+        @JsonProperty("meeting_id") String meetingId,
+        @JsonProperty("conversation_id") String conversationId
 ) {
+    public QuestionRequest(String question, String meetingId) {
+        this(question, meetingId, null);
+    }
 }

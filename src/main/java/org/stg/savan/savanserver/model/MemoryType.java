@@ -3,6 +3,7 @@ package org.stg.savan.savanserver.model;
 /** Classifies the kind of information stored in the memory vector store. */
 public enum MemoryType {
     TRANSCRIPT("transcript"),
+    MEETING_SUMMARY("meeting_summary"),
     ACTION_ITEM("action_item"),
     DECISION("decision"),
     FUTURE_PLAN("future_plan");

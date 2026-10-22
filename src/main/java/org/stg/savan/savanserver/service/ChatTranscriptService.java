@@ -7,4 +7,6 @@ public interface ChatTranscriptService {
     String saveTranscript(String text, String device, String meetingId);
 
     ChatAnswerResult answerQuestion(String question, String meetingId);
+
+    ChatAnswerResult answerQuestion(String question, String meetingId, String conversationId);
 }
