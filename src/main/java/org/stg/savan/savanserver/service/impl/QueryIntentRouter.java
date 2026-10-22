@@ -21,7 +21,11 @@ final class QueryIntentRouter {
                     + ".*\\b(?:happen|stay|remain|run|take place)\\b");
     private static final Pattern FUTURE_PLAN = Pattern.compile(
             "\\b(future plans?|upcoming|later|plan|plans|planned|planning|"
-                    + "milestones?|roadmap|what happens next)\\b");
+                    + "milestones?|roadmap|what happens next|"
+                    + "(?:next|upcoming) (?:team )?(?:events?|meetings?|activities?)|"
+                    + "schedules?|scheduled|rehearsals?|calendar)\\b");
+    private static final Pattern DEFINITION_QUESTION = Pattern.compile(
+            "(?iu)^\\s*(?:what\\s+is|what's|define|explain)\\s+(?:the\\s+)?(.+?)\\s*[?.!]*\\s*$");
     private static final Pattern INCIDENT_IMPACT = Pattern.compile(
             "(?is)(?=.*\\b(?:outage|incident|disruption|downtime|failure)\\b)"
                     + "(?=.*\\b(?:affect|affected|impact|impacted|production|prod|customer-facing|live)\\b).*");
@@ -53,8 +57,18 @@ final class QueryIntentRouter {
                     + "and architecture choices about where processing, reasoning, or answer generation will run.");
         }
         if (FUTURE_PLAN.matcher(normalized).find()) {
-            return expanded("FUTURE_PLAN", question, "Find future plans, upcoming activities, planned work, "
-                    + "next milestones, and roadmap.");
+            return expanded("FUTURE_PLAN", question, "Find future plans, scheduled events and meetings, "
+                    + "rehearsals, dates, deadlines, chronology, upcoming activities, planned work, "
+                    + "next milestones, and roadmap. Identify the next scheduled item after a given event or date.");
+        }
+        var definition = DEFINITION_QUESTION.matcher(question);
+        if (definition.matches()) {
+            String entity = definition.group(1).replaceAll("[?.!]+$", "").trim();
+            String normalizedEntity = normalizeSpelling(entity);
+            return new PlannedQuery("DEFINITION", List.of(
+                    question,
+                    "Definition, meaning, description, purpose, role, and function of " + entity,
+                    "What is " + normalizedEntity + "? " + entity + " definition and description"), null);
         }
         return new PlannedQuery("TRANSCRIPT", List.of(question), null);
     }
@@ -63,12 +77,19 @@ final class QueryIntentRouter {
         return new PlannedQuery(intent, List.of(question, question + "\n" + expansion), null);
     }
 
+    private static String normalizeSpelling(String value) {
+        return java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFD)
+                .replaceAll("\\p{M}+", "")
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("([aeiou])\\1+", "$1");
+    }
+
     private static String impactSubject(String question) {
-        var affectedObject = IMPACT_OBJECT.matcher(question);
-        String subject = affectedObject.find() ? affectedObject.group(1) : null;
+        var affectedSubject = IMPACTED_SUBJECT.matcher(question);
+        String subject = affectedSubject.find() ? affectedSubject.group(1) : null;
         if (subject == null) {
-            var affectedSubject = IMPACTED_SUBJECT.matcher(question);
-            subject = affectedSubject.find() ? affectedSubject.group(1) : null;
+            var affectedObject = IMPACT_OBJECT.matcher(question);
+            subject = affectedObject.find() ? affectedObject.group(1) : null;
         }
         if (subject == null || GENERIC_IMPACT_SUBJECTS.contains(subject.toLowerCase(Locale.ROOT))) {
             return null;

@@ -1,0 +1,8 @@
+numpy
+soundfile
+sherpa-onnx
+piper-tts
+requests
+vosk
+gpiozero
+sounddevice

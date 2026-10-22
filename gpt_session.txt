@@ -1,0 +1,256 @@
+https://chatgpt.com/share/6ac8e9f0-ce4c-83ee-8d52-973b7c153bad
+
+
+
+# Project Context — Sathi Personal AI Companion (Raspberry Pi)
+
+## 1. Development Environment
+
+* **Device:** Raspberry Pi
+* **Architecture:** `aarch64` (64-bit ARM)
+* **OS:** Raspberry Pi OS, Debian-based
+* **Python:** 3.13.5
+* **Project directory:** `~/sathi-personal-ai-companion/rasp`
+* **Python virtual environment:** `venv/`
+* **Shell prompt:** `(venv) piuser@raspberrypi:~/sathi-personal-ai-companion/rasp $`
+
+Always activate the environment before running Python scripts:
+
+```bash
+cd ~/sathi-personal-ai-companion/rasp
+source venv/bin/activate
+```
+
+Verify the interpreter and pip paths before installing packages. Previously, `which pip` returned `/usr/bin/pip` despite the `(venv)` prompt, so ensure the environment's Python and pip are actually being used.
+
+## 2. Offline Speech-to-Text (STT) — Working
+
+I have a working offline STT system using **Sherpa-ONNX Whisper** with a Hindi/Hinglish-oriented model.
+
+Model directory:
+
+```text
+models/hi-hinglish-swift/
+├── encoder.int8.onnx
+├── decoder.int8.onnx
+└── tokens.txt
+```
+
+Relevant packages:
+
+* `numpy`
+* `soundfile`
+* `sherpa-onnx`
+
+The recognizer is initialized with:
+
+```python
+recognizer = sherpa_onnx.OfflineRecognizer.from_whisper(
+    encoder=str(MODEL_DIR / "encoder.int8.onnx"),
+    decoder=str(MODEL_DIR / "decoder.int8.onnx"),
+    tokens=str(MODEL_DIR / "tokens.txt"),
+    num_threads=2,
+    decoding_method="greedy_search",
+    language="hi",
+    task="transcribe",
+)
+```
+
+The reusable transcription function is `transcribe_wav(audio_path)`. It reads WAV files using `soundfile`, converts stereo to mono, ignores near-silent audio, and returns the recognized text.
+
+**Important:** WAV files must be 16 kHz. The current STT validation expects `16000` Hz. Previously, the sample-rate constant and error message were inconsistent, causing confusion. Keep recording, WAV validation, and `stream.accept_waveform()` aligned at 16 kHz.
+
+The original `offline_stt.py` used `/home/piuser/savan` as its base directory. It was subsequently adapted to the newer project at `~/sathi-personal-ai-companion/rasp`. Verify that file paths now point to the actual project directory.
+
+## 3. Audio Recording — Implemented
+
+Created `audio_recorder.py`, which records microphone input using `arecord`:
+
+```bash
+arecord -d 5 -f S16_LE -r 16000 -c 1 test.wav
+```
+
+The Python wrapper records a five-second, mono, 16 kHz WAV and saves it under `recordings/`.
+
+System audio utilities are installed using:
+
+```bash
+sudo apt install alsa-utils
+```
+
+`alsa-utils` provides `arecord` and `aplay`.
+
+## 4. Main STT Application — Implemented
+
+Created `app.py`, intended to run the pipeline:
+
+1. Record five seconds from the microphone.
+2. Save the recording to `recordings/input.wav`.
+3. Pass it to `transcribe_wav()`.
+4. Print the recognized text.
+
+The application structure is:
+
+```text
+Microphone → audio_recorder.py → input.wav
+           → offline_stt.py → recognized text
+```
+
+The app was tested, but there was a confusing sample-rate validation error stating:
+
+```text
+Expected 16000 Hz audio, received 16000 Hz
+```
+
+The validation was subsequently modified to cast the returned sample rate to `int` and print diagnostic information. Verify the current files before making further changes.
+
+## 5. Offline Text-to-Speech (TTS) — Current Work
+
+The goal is to make the assistant speak its responses locally without requiring an online TTS API.
+
+Piper TTS has been installed, and this command works:
+
+```bash
+python -m piper --help
+```
+
+Environment details:
+
+```text
+Architecture: aarch64
+Python: 3.13.5
+```
+
+The initial package installation hit the PEP 668 “externally managed environment” error because system pip was being used. The intended solution is to use the project's virtual environment, not `sudo pip` or `--break-system-packages`.
+
+### Voice selection
+
+I want a general-purpose voice that speaks **mostly English, with some Hindi/Hinglish**.
+
+An English Piper voice such as `en_US-lessac-medium` was suggested for initial testing. `hi_IN-pratham-medium` is primarily Hindi and is not ideal as the only voice for English-first responses.
+
+Piper generally has language-specific voice models, so mixed English/Hindi pronunciation needs testing. A future option is to use separate English and Hindi models and choose based on the response language.
+
+### Intended TTS directory
+
+```text
+rasp/
+├── tts_engine.py
+└── tts/
+    ├── models/
+    │   ├── en_US-lessac-medium.onnx
+    │   └── en_US-lessac-medium.onnx.json
+    └── output/
+```
+
+The English model download was suggested but **successful model download and playback have not yet been confirmed**.
+
+The intended Piper download command is:
+
+```bash
+python -m piper.download_voices \
+  --data-dir "$PWD/tts/models" \
+  en_US-lessac-medium
+```
+
+Test synthesis independently before integrating it:
+
+```bash
+python -m piper \
+  --model en_US-lessac-medium \
+  --data-dir "$PWD/tts/models" \
+  --output-file tts/output/english.wav \
+  -- "Hello! How can I help you today?"
+```
+
+Then play the file:
+
+```bash
+aplay tts/output/english.wav
+```
+
+## 6. Existing Memory/LLM Application
+
+The project already has these modules:
+
+* `database.py`, exposing `init_db()` and `get_all_transcriptions()`
+* `llm.py`, exposing `ask_gemma(question, memories)`
+* `ask_memory.py`, which retrieves stored transcriptions and sends questions to Gemma.
+
+The current `ask_memory.py` logic is:
+
+```python
+from database import init_db, get_all_transcriptions
+from llm import ask_gemma
+
+init_db()
+
+print("Loading memories...")
+memories = get_all_transcriptions()
+print(f"Found {len(memories)} memories.")
+
+while True:
+    question = input("\nYou: ").strip()
+
+    if question.lower() in ["exit", "quit"]:
+        break
+
+    if not question:
+        continue
+
+    answer = ask_gemma(question, memories)
+    print()
+    print("Gemma:", answer)
+```
+
+We want to add TTS so the assistant speaks Gemma's answer.
+
+The proposed updated version imports:
+
+```python
+from tts_engine import speak
+```
+
+and after generating the answer:
+
+```python
+answer = str(answer).strip()
+print()
+print("Gemma:", answer)
+
+if answer:
+    try:
+        speak(answer)
+    except Exception as error:
+        print(f"TTS error: {error}")
+```
+
+This integration is **proposed but not yet verified end-to-end**.
+
+## 7. Proposed Python Dependencies
+
+The tentative `requirements.txt` contains:
+
+```text
+numpy
+soundfile
+sherpa-onnx
+piper-tts
+```
+
+These should be installed in the correct virtual environment. Once the system works, pin compatible versions using `pip freeze` or a deliberately maintained lock file.
+
+## 8. Immediate Next Steps
+
+Please continue in this order:
+
+1. Inspect the current project files and actual venv paths.
+2. Verify that Piper's English voice model and JSON configuration exist.
+3. Test generating a WAV from English text.
+4. Test playback using `aplay`.
+5. Finalize and test `tts_engine.py` against the installed Piper API and actual voice configuration.
+6. Integrate `speak(answer)` into `ask_memory.py`.
+7. Test the full memory-question → Gemma-answer → spoken-response flow.
+8. Later, consider sentence-by-sentence streaming TTS, Hindi voice selection, and integration with the microphone/STT pipeline.
+
+**Important:** Do not replace the working Sherpa-ONNX STT model or unnecessarily rebuild the existing environment. Verify the current files first and make minimal changes.
