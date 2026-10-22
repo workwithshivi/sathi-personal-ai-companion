@@ -23,7 +23,12 @@ final class QueryIntentRouter {
             "\\b(decisions?|decide|decides|decided|deciding|agree(?:d)?|"
                     + "choose|chose|chosen|select|selects|selected|selecting|trade[ -]?off)\\b");
     private static final Pattern FUTURE_PLAN = Pattern.compile(
-            "\\b(future plans?|upcoming|later|plan|plans|planned|planning|"
+            "\\b(future plans?|future scope|further plans?|further work|"
+                    + "what should (?:(?:the|our|my|your|their)\\s+)?"
+                    + "(?:team|group|we|i|[\\p{L}][\\p{L}\\p{N}_'-]*)\\s+"
+                    + "(?:work on|focus on|take on|prioritize)\\s+(?:next|now)|"
+                    + "what (?:will|could|would) be the improvement|improvements? (?:planned|discussed|needed)|"
+                    + "upcoming|later|plan|plans|planned|planning|"
                     + "milestones?|roadmap|what happens next|next steps?|"
                     + "scheduled|timeline|deadline|target date)\\b");
     private static final Pattern DEFINITION_QUESTION = Pattern.compile(
@@ -98,7 +103,8 @@ final class QueryIntentRouter {
         }
         if (FUTURE_PLAN.matcher(normalized).find()) {
             return expanded("FUTURE_PLAN", question,
-                    "Find relevant plans, upcoming work, timelines, milestones, and deadlines.");
+                    "Find relevant future scope, planned and upcoming work, next tasks, proposed improvements, "
+                            + "priorities, timelines, milestones, and deadlines.");
         }
         Matcher issue = ISSUE_QUESTION.matcher(question);
         if (issue.matches()) {

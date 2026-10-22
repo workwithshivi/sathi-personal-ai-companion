@@ -185,6 +185,12 @@ public final class QnaEvidenceSupport {
 
     /** Rejects quotes that do not address the question or omit an explicitly requested date/value. */
     public static boolean evidenceQuotesAddressQuestion(String question, List<String> quotes) {
+        return evidenceQuotesAddressQuestion(question, quotes, List.of(question));
+    }
+
+    /** Checks a source quote against the original question and any generic retrieval rewrites. */
+    public static boolean evidenceQuotesAddressQuestion(
+            String question, List<String> quotes, List<String> searchQueries) {
         if (quotes == null || quotes.isEmpty()) {
             return false;
         }
@@ -192,15 +198,19 @@ public final class QnaEvidenceSupport {
                 .filter(java.util.Objects::nonNull)
                 .map(QnaEvidenceSupport::normalizeEvidenceText)
                 .collect(java.util.stream.Collectors.joining(" "));
-        java.util.Set<String> questionTerms = contentTerms(question);
-        if (!questionTerms.isEmpty()) {
-            int requiredOverlap = Math.max(1, (questionTerms.size() + 1) / 2);
-            long overlap = questionTerms.stream().filter(quotedText::contains).count();
-            if (overlap < requiredOverlap) {
-                return false;
-            }
+        if (!containsAllConstraints(quotedText, questionConstraints(question))) {
+            return false;
         }
-        return containsAllConstraints(quotedText, questionConstraints(question));
+        List<String> queries = searchQueries == null || searchQueries.isEmpty()
+                ? List.of(question) : searchQueries;
+        return queries.stream()
+                .map(QnaEvidenceSupport::contentTerms)
+                .filter(terms -> !terms.isEmpty())
+                .anyMatch(terms -> {
+                    int overlap = overlapCount(terms, contentTerms(quotedText));
+                    int requiredOverlap = Math.max(1, (terms.size() + 2) / 3);
+                    return overlap >= requiredOverlap;
+                });
     }
 
     /** Keeps API citations limited to chunks that contain the supporting sentence or quote. */

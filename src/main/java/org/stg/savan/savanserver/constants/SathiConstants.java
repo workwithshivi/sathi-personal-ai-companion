@@ -17,6 +17,7 @@ public final class SathiConstants {
             "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}");
 
     public static final int CHAT_RESULT_COUNT = 5;
+    public static final int QUERY_EXPANSION_MAX_VARIANTS = 3;
     /** Retry at the lower threshold when the primary search returns fewer than this many distinct chunks. */
     public static final int CHAT_MIN_PRIMARY_RESULTS = 2;
     public static final double SIMILARITY_THRESHOLD = 0.55;
@@ -54,5 +55,16 @@ public final class SathiConstants {
             evidence_quotes must contain one or more exact, contiguous quotes copied from the supplied excerpts
             that directly support the answer. Set supported_by_evidence to false and use an empty quote list
             when the excerpts do not answer the question. Never invent or paraphrase an evidence quote.
+            """;
+
+    public static final String QUERY_EXPANSION_SYSTEM_PROMPT = """
+            Rewrite a user's question into up to three short search queries that help find the same
+            information in transcript wording. Use natural paraphrases, common synonyms, and closely
+            related everyday terms that people use for the same kind of information (for example,
+            feedback, suggestions, comments, and recommendations). Vary the wording meaningfully;
+            do not return near-duplicates.
+            Preserve the original subject, scope, dates, names, and requested relationship. Do not broaden
+            the question into a different topic, add assumptions, or answer the question.
+            Return only the structured queries field. Return an empty list if no useful rewrite is possible.
             """;
 }

@@ -6,6 +6,7 @@ import org.stg.savan.savanserver.constants.SathiConstants;
 import org.stg.savan.savanserver.model.ChatAnswerResult;
 import org.stg.savan.savanserver.model.GroundedChatAnswer;
 import org.stg.savan.savanserver.model.MemoryType;
+import org.stg.savan.savanserver.model.QueryExpansionResult;
 import org.stg.savan.savanserver.service.ChatTranscriptService;
 import org.stg.savan.savanserver.service.support.TranscriptDocumentSupport;
 import org.stg.savan.savanserver.service.support.QnaEvidenceSupport;
@@ -22,6 +23,7 @@ import org.springframework.stereotype.Service;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -89,6 +91,7 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
         String normalizedQuestion = question.trim();
         String normalizedMeetingId = MeetingIds.normalizeOptional(meetingId);
         QueryIntentRouter.PlannedQuery plannedQuery = QueryIntentRouter.plan(normalizedQuestion);
+        LinkedHashSet<String> searchQueries = new LinkedHashSet<>(plannedQuery.searchQueries());
         String scope = normalizedMeetingId == null ? "all_chat_meetings" : normalizedMeetingId;
 
         ApiRequestLogSupport.info(log,
@@ -107,7 +110,7 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
             }
         }
         long retrievalStartedAt = System.nanoTime();
-        List<Document> retrieved = search(plannedQuery.searchQueries(), normalizedMeetingId,
+        List<Document> retrieved = search(List.copyOf(searchQueries), normalizedMeetingId,
                 SathiConstants.SIMILARITY_THRESHOLD);
         int primaryCount = TranscriptDocumentSupport.deduplicateAndLimit(
                 retrieved, SathiConstants.CHAT_RESULT_COUNT).size();
@@ -115,10 +118,30 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
                 "Primary retrieval summary | scope={} | raw_hits={} | distinct_chunks={} | threshold={}",
                 scope, retrieved.size(), primaryCount, SathiConstants.SIMILARITY_THRESHOLD);
         if (primaryCount < SathiConstants.CHAT_MIN_PRIMARY_RESULTS) {
+            List<String> expandedQueries = expandSearchQueries(normalizedQuestion);
+            if (!expandedQueries.isEmpty()) {
+                List<String> distinctExpansions = expandedQueries.stream()
+                        .filter(query -> !searchQueries.contains(query))
+                        .toList();
+                if (!distinctExpansions.isEmpty()) {
+                    searchQueries.addAll(distinctExpansions);
+                    List<Document> expandedMatches = search(distinctExpansions, normalizedMeetingId,
+                            SathiConstants.SIMILARITY_THRESHOLD);
+                    retrieved.addAll(expandedMatches);
+                    primaryCount = TranscriptDocumentSupport.deduplicateAndLimit(
+                            retrieved, SathiConstants.CHAT_RESULT_COUNT).size();
+                    ApiRequestLogSupport.info(log,
+                            "Generic query expansion completed | scope={} | variants={} | evidence_chunks={}",
+                            scope, distinctExpansions.size(), primaryCount);
+                }
+            }
+        }
+
+        if (primaryCount < SathiConstants.CHAT_MIN_PRIMARY_RESULTS) {
             ApiRequestLogSupport.info(log,
                     "Primary retrieval returned limited evidence; retrying and merging fallback results | scope={} | primary_chunks={} | threshold={}",
                     scope, primaryCount, SathiConstants.RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD);
-            List<Document> fallback = search(plannedQuery.searchQueries(), normalizedMeetingId,
+            List<Document> fallback = search(List.copyOf(searchQueries), normalizedMeetingId,
                     SathiConstants.RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD);
             retrieved.addAll(fallback);
             ApiRequestLogSupport.debug(log,
@@ -134,7 +157,7 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
                 ApiRequestLogSupport.info(log,
                         "Retrieval still sparse; retrying with last-resort threshold | scope={} | chunks={} | threshold={}",
                         scope, mergedCount, SathiConstants.RETRIEVAL_LAST_RESORT_SIMILARITY_THRESHOLD);
-                List<Document> lastResort = search(plannedQuery.searchQueries(), normalizedMeetingId,
+                List<Document> lastResort = search(List.copyOf(searchQueries), normalizedMeetingId,
                         SathiConstants.RETRIEVAL_LAST_RESORT_SIMILARITY_THRESHOLD);
                 retrieved.addAll(lastResort);
                 ApiRequestLogSupport.info(log,
@@ -288,19 +311,7 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
                 sources.size(), scope, sources.getFirst().score());
 
         long startedAt = System.nanoTime();
-        GroundedChatAnswer generated = chatClient.prompt()
-                .system(SathiConstants.CHAT_SYSTEM_PROMPT)
-                .user(user -> user.text("""
-                        Question:
-                        {question}
-
-                        Retrieved transcript evidence:
-                        {context}
-                        """)
-                        .param("question", normalizedQuestion)
-                        .param("context", context))
-                .call()
-                .entity(GroundedChatAnswer.class, spec -> spec.useProviderStructuredOutput());
+        GroundedChatAnswer generated = generateGroundedAnswer(normalizedQuestion, context, false);
 
         if (generated == null || generated.answer() == null || generated.answer().isBlank()) {
             throw new IllegalStateException("Chat model returned an empty structured answer");
@@ -308,7 +319,19 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
         QnaEvidenceSupport.EvidenceQuoteCheck quoteCheck =
                 QnaEvidenceSupport.checkEvidenceQuotes(generated.evidenceQuotes(), contextDocuments);
         boolean quotesAddressQuestion = QnaEvidenceSupport.evidenceQuotesAddressQuestion(
-                normalizedQuestion, generated.evidenceQuotes());
+                normalizedQuestion, generated.evidenceQuotes(), List.copyOf(searchQueries));
+        if (generated.supportedByEvidence() && (!quoteCheck.valid() || !quotesAddressQuestion)) {
+            ApiRequestLogSupport.info(log,
+                    "Retrying grounded answer once because evidence validation failed | scope={} | valid_quotes={}/{} | quotes_address_question={}",
+                    scope, quoteCheck.validCount(), quoteCheck.totalCount(), quotesAddressQuestion);
+            generated = generateGroundedAnswer(normalizedQuestion, context, true);
+            if (generated == null || generated.answer() == null || generated.answer().isBlank()) {
+                throw new IllegalStateException("Chat model returned an empty structured answer on validation retry");
+            }
+            quoteCheck = QnaEvidenceSupport.checkEvidenceQuotes(generated.evidenceQuotes(), contextDocuments);
+            quotesAddressQuestion = QnaEvidenceSupport.evidenceQuotesAddressQuestion(
+                    normalizedQuestion, generated.evidenceQuotes(), List.copyOf(searchQueries));
+        }
         ApiRequestLogSupport.debug(log,
                 "Structured Q&A response validated | scope={} | model_supported={} | valid_quotes={}/{} | quotes_address_question={} | answer_characters={}",
                 scope, generated.supportedByEvidence(), quoteCheck.validCount(), quoteCheck.totalCount(),
@@ -340,6 +363,69 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
 
     private static List<org.stg.savan.savanserver.model.RetrievalSource> toSources(List<Document> documents) {
         return documents.stream().map(TranscriptDocumentSupport::toSource).toList();
+    }
+
+    private GroundedChatAnswer generateGroundedAnswer(String question, String context, boolean quoteCorrection) {
+        String systemPrompt = SathiConstants.CHAT_SYSTEM_PROMPT;
+        if (quoteCorrection) {
+            systemPrompt += """
+
+                    Your previous citation failed validation. Copy each evidence quote exactly, character-for-character,
+                    from one contiguous sentence in the supplied transcript excerpts. Do not paraphrase a quote.
+                    If you cannot find an exact supporting sentence, return supported_by_evidence=false and no quotes.
+                    """;
+        }
+        return chatClient.prompt()
+                .system(systemPrompt)
+                .user(user -> user.text("""
+                        Question:
+                        {question}
+
+                        Retrieved transcript evidence:
+                        {context}
+                        """)
+                        .param("question", question)
+                        .param("context", context))
+                .call()
+                .entity(GroundedChatAnswer.class, spec -> spec.useProviderStructuredOutput());
+    }
+
+    private List<String> expandSearchQueries(String question) {
+        long startedAt = System.nanoTime();
+        try {
+            QueryExpansionResult expansion = chatClient.prompt()
+                    .system(SathiConstants.QUERY_EXPANSION_SYSTEM_PROMPT)
+                    .user(user -> user.text("Create equivalent search queries for this question:\n{question}")
+                            .param("question", question))
+                    .call()
+                    .entity(QueryExpansionResult.class, spec -> spec.useProviderStructuredOutput());
+            if (expansion == null || expansion.queries() == null) {
+                return List.of();
+            }
+
+            List<String> queries = expansion.queries().stream()
+                    .filter(java.util.Objects::nonNull)
+                    .map(String::trim)
+                    .filter(query -> !query.isBlank() && query.length() <= 500
+                            && !query.equalsIgnoreCase(question))
+                    .distinct()
+                    .limit(SathiConstants.QUERY_EXPANSION_MAX_VARIANTS)
+                    .toList();
+            ApiRequestLogSupport.info(log,
+                    "Generic query rewrites generated | variants={} | elapsed_ms={}",
+                    queries.size(), ApiRequestLogSupport.elapsedMillis(startedAt));
+            for (int index = 0; index < queries.size(); index++) {
+                ApiRequestLogSupport.debugWhen(log, includeContentInLogs,
+                        "Generic search query rewrite | variant={}/{} | query={}",
+                        index + 1, queries.size(), queries.get(index));
+            }
+            return queries;
+        } catch (RuntimeException e) {
+            ApiRequestLogSupport.info(log,
+                    "Generic query expansion unavailable; continuing with existing queries | exception={}",
+                    e.getClass().getSimpleName());
+            return List.of();
+        }
     }
 
     private List<Document> search(List<String> queries, String meetingId, double threshold) {
