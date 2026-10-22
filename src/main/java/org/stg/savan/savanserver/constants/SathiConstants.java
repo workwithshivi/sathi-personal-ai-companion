@@ -28,7 +28,7 @@ public final class SathiConstants {
     public static final int TRANSCRIPT_MIN_CHUNK_LENGTH_TO_EMBED = 20;
     public static final int TRANSCRIPT_MAX_CHUNKS = 5000;
 
-    public static final double CHAT_TEMPERATURE = 0.1;
+    public static final double CHAT_TEMPERATURE = 0.5;
     public static final int CHAT_MAX_PREDICT_TOKENS = 256;
 
     public static final String CHAT_SYSTEM_PROMPT = """

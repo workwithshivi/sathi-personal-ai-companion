@@ -198,7 +198,8 @@ public class ChatTranscriptServiceImpl implements ChatTranscriptService {
     private static String normalizeForMatching(String value) {
         return Normalizer.normalize(value, Normalizer.Form.NFD)
                 .replaceAll("\\p{M}+", "")
-                .toLowerCase(java.util.Locale.ROOT);
+                .toLowerCase(java.util.Locale.ROOT)
+                .replaceAll("([aeiou])\\1+", "$1");
     }
 
     private List<Document> search(List<String> queries, String meetingId, double threshold) {

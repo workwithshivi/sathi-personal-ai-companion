@@ -57,7 +57,7 @@ class ChatTranscriptServiceImplTest {
     }
 
     @Test
-    void answersEntityDefinitionDirectlyFromRetrievedTranscriptEvidence() {
+    void answersDefinitionAcrossSpellingVariantsFromRetrievedEvidence() {
         VectorStore vectorStore = mock(VectorStore.class);
         ChatClient chatClient = mock(ChatClient.class);
         Document evidence = Document.builder()
@@ -76,7 +76,7 @@ class ChatTranscriptServiceImplTest {
                 TokenTextSplitter.builder().withChunkSize(350).build(),
                 chatClient);
 
-        var result = service.answerQuestion("What is SĀTHI?", null);
+        var result = service.answerQuestion("What is saathi?", null);
 
         assertTrue(result.answer().contains("SĀTHI office knowledge assistant"));
         assertTrue(result.answer().contains("search internal knowledge in plain language"));
