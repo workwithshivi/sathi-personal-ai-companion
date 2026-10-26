@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Objects;
 
+/** Exposes the transcript-ingestion and Q&A HTTP endpoints and maps service outcomes to HTTP responses. */
 @RestController
 public class ChatTranscriptController {
 
@@ -28,10 +29,12 @@ public class ChatTranscriptController {
     @Value("${sathi.logging.include-content:false}")
     private boolean includeContentInLogs;
 
+    /** Injects the application service used by both HTTP endpoints. */
     public ChatTranscriptController(ChatTranscriptService chatTranscriptService) {
         this.chatTranscriptService = chatTranscriptService;
     }
 
+    /** Validates and accepts transcript batches, then returns the generated or supplied meeting ID. */
     @PostMapping("/ai/transcripts")
     public ResponseEntity<?> saveTranscript(
             @RequestBody TranscriptRequest request) {
@@ -75,6 +78,7 @@ public class ChatTranscriptController {
         }
     }
 
+    /** Validates a question request, delegates Q&A, and maps validation or service failures to HTTP status. */
     @PostMapping("/ai/qna")
     public ResponseEntity<?> answerQuestion(@RequestBody QuestionRequest request) {
         long startedAt = System.nanoTime();
